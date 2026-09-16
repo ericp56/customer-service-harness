@@ -1,12 +1,10 @@
 <!--
 Sync Impact Report
-Version change: 1.0.0 -> 1.1.0
-Modified principles: I. Customer Outcome First -> I. Customer Outcome and Experience Consistency;
-III. Testable Changes -> IV. Testing Standards
-Added principles: III. Code Quality and Maintainability; V. Performance Requirements
+Version change: 1.1.0 -> 1.1.1
+Modified principles: None
 Added sections: None
 Removed sections: None
-Follow-up TODOs: TODO(RATIFICATION_DATE): Original adoption date is unknown and must be recorded.
+Follow-up TODOs: None
 -->
 # Customer Service Constitution
 
@@ -88,5 +86,4 @@ and release review MUST assess compliance, including code quality, testing cover
 consistency, and applicable performance expectations. Exceptions require a documented,
 time-bounded approval and mitigation plan.
 
-**Version**: 1.1.0 | **Ratified**: TODO(RATIFICATION_DATE): Original adoption date is unknown |
-**Last Amended**: 2026-09-13
+**Version**: 1.1.1 | **Ratified**: 2026-09-13 | **Last Amended**: 2026-09-16
