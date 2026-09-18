@@ -56,10 +56,22 @@ model/LLM dependency, external service, or durable data
 
 ## Rollout & Rollback
 
-- deployment readiness checks for HTTPS ingress, privacy configuration, browser flow, and 50-session load result;
-- rollout monitoring using content-free metrics;
-- rollback trigger thresholds for response latency, queue saturation, or privacy-control failure;
-- rollback action: withdraw the new application/ingress route and confirm transient content is not retained.
+
+- Before rollout, confirm the HTTPS ingress controls, privacy configuration, browser E2E suite,
+  and 50-session load scenario pass.
+- During rollout, monitor only content-free response-duration, queue-depth, outcome, and health metrics.
+- Roll back if fewer than 95% of successful submissions complete within one second, the queue
+  saturates, or any privacy control or body-log suppression failure is detected.
+- To roll back, withdraw the new application/ingress route, verify the prior route is active,
+  and confirm no transient chat content was retained.
+
+
+### Ingress Ownership
+
+The platform ingress configuration, maintained outside this repository, terminates same-origin HTTPS,
+uses finite connection and request timeouts, and disables request/response body logging. Deployment
+approval requires platform-owner confirmation of these controls before the application route is
+enabled.
 
 ## Project Structure
 

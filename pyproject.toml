@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "echo-web-chat"
+version = "0.1.0"
+description = "A transient, privacy-safe echo chat prototype."
+requires-python = ">=3.14,<3.15"
+dependencies = [
+    "gradio==6.27.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0.0,<10.0.0",
+    "pytest-playwright>=0.7.0,<1.0.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+    "e2e: browser tests that require installed Playwright browsers",
+]

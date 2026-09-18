@@ -14,32 +14,32 @@ quality. It does not mean implementation work is complete.
 
 ## Requirement Completeness
 
-- [ ] CHK001 Are the required input, submission, reply, retry, and start-new-conversation journeys
+- [x] CHK001 Are the required input, submission, reply, retry, and start-new-conversation journeys
   all specified for the active browser session? [Completeness, Spec §User Scenarios & Testing]
-- [ ] CHK002 Are the requirements for accepting, preserving, and returning submitted text defined
+- [x] CHK002 Are the requirements for accepting, preserving, and returning submitted text defined
   without relying on an unstated interpretation of “identical”? [Clarity, Spec §FR-002; Contract
   §Message Input]
-- [ ] CHK003 Are the information and controls available after the 50-pair limit sufficiently
+- [x] CHK003 Are the information and controls available after the 50-pair limit sufficiently
   specified to distinguish a limit state from an operational failure? [Completeness, Spec §FR-009;
   Contract §Validation and Operational Failure Behavior]
-- [ ] CHK004 Does the specification define whether a new conversation is available before the
+- [x] CHK004 Does the specification define whether a new conversation is available before the
   50-pair limit as well as at the limit? [Gap, Spec §FR-009]
 
 ## Requirement Clarity and Consistency
 
-- [ ] CHK005 Is “active browser session” defined consistently with the contract's page reload,
+- [x] CHK005 Is “active browser session” defined consistently with the contract's page reload,
   session-expiry, and process-restart boundaries? [Consistency, Spec §Assumptions; Contract
   §Rendering and Transient-State Contract]
-- [ ] CHK006 Are “blank,” “whitespace-only,” and the 4,096-code-point maximum each defined with
+- [x] CHK006 Are “blank,” “whitespace-only,” and the 4,096-code-point maximum each defined with
   one unambiguous rule across the feature documents? [Clarity, Spec §FR-004–FR-005; Data Model
   §Submitted Message]
-- [ ] CHK007 Are the exact-echo requirement and the requirement not to alter accepted text
+- [x] CHK007 Are the exact-echo requirement and the requirement not to alter accepted text
   consistent across the specification, data model, and callback contract? [Consistency, Spec
   §FR-002; Data Model §Submitted Message; Contract §Success Behavior]
-- [ ] CHK008 Is the distinction between input-validation failure and operational failure clearly
+- [x] CHK008 Is the distinction between input-validation failure and operational failure clearly
   defined, including which content remains available in each case? [Clarity, Spec §FR-004–FR-006;
   Contract §Validation and Operational Failure Behavior]
-- [ ] CHK009 Are the role names used for visible conversation messages consistent between the
+- [x] CHK009 Are the role names used for visible conversation messages consistent between the
   feature specification and the data model/contract? [Consistency, Spec §Key Entities; Data Model
   §Conversation Message; Contract §Success Behavior]
 
@@ -58,50 +58,50 @@ quality. It does not mean implementation work is complete.
 
 ## Scenario and Edge-Case Coverage
 
-- [ ] CHK014 Are requirements defined for what happens to a valid message entered when the
+- [x] CHK014 Are requirements defined for what happens to a valid message entered when the
   conversation reaches the pair limit, including whether it remains available after starting a new
   conversation? [Gap, Spec §FR-009; Contract §Validation and Operational Failure Behavior]
-- [ ] CHK015 Are repeated submission, a pending request, retry, and retry-after-limit scenarios
+- [x] CHK015 Are repeated submission, a pending request, retry, and retry-after-limit scenarios
   covered without conflicting ordering or duplication rules? [Coverage, Spec §Edge Cases; Contract
   §Validation and Operational Failure Behavior]
-- [ ] CHK016 Are requirements defined for an unexpected callback result that differs from the
+- [x] CHK016 Are requirements defined for an unexpected callback result that differs from the
   visitor's accepted text? [Coverage, Contract §Validation and Operational Failure Behavior]
-- [ ] CHK017 Are the boundary cases for exactly 4,096 and 4,097 Unicode code points documented as
+- [x] CHK017 Are the boundary cases for exactly 4,096 and 4,097 Unicode code points documented as
   acceptance criteria rather than only as a general limit? [Coverage, Spec §FR-005; Quickstart
   §End-to-End Validation]
 
 ## Privacy, Accessibility, and Performance Requirements
 
-- [ ] CHK018 Is the no-durable-retention requirement explicit about every intended boundary:
+- [x] CHK018 Is the no-durable-retention requirement explicit about every intended boundary:
   browser persistence, cookies, logs, analytics, traces, files, databases, caches, queues, and
   persisted framework artifacts? [Completeness, Spec §FR-008; Data Model introductory text;
   Contract §Rendering and Transient-State Contract]
-- [ ] CHK019 Are the allowed transient framework/browser states defined narrowly enough to avoid
+- [x] CHK019 Are the allowed transient framework/browser states defined narrowly enough to avoid
   conflicting with the no-retention requirement? [Clarity, Plan §Technical Context; Research
   §Permit only bounded, ephemeral Gradio state]
-- [ ] CHK020 Are requirements for message-content exclusion from diagnostics distinct from
+- [x] CHK020 Are requirements for message-content exclusion from diagnostics distinct from
   operational metrics that are still needed to evaluate responsiveness and failures? [Completeness,
   Plan §Constitution Check; Contract §Operational Contract]
-- [ ] CHK021 Are accessible labels, textual validation feedback, programmatic status updates,
+- [x] CHK021 Are accessible labels, textual validation feedback, programmatic status updates,
   keyboard access to recovery controls, and non-color-only failure communication specified for all
   relevant journeys? [Coverage, Spec §FR-004 and §FR-006; Contract §Validation and Operational
   Failure Behavior]
-- [ ] CHK022 Is the requirement to preserve line breaks and plain-text safety consistent with the
+- [x] CHK022 Is the requirement to preserve line breaks and plain-text safety consistent with the
   exact-echo promise for Unicode and special characters? [Consistency, Spec §Edge Cases; Contract
   §Rendering and Transient-State Contract]
-- [ ] CHK023 Are finite queue/concurrency expectations and the definition of queue saturation
+- [x] CHK023 Are finite queue/concurrency expectations and the definition of queue saturation
   specified with measurable thresholds for the 50-session performance target? [Gap, Plan
   §Technical Context; Quickstart §Performance Validation]
 
 ## Dependencies and Assumptions
 
-- [ ] CHK024 Is the assumption of unauthenticated modern-browser use assessed for its effects on
+- [x] CHK024 Is the assumption of unauthenticated modern-browser use assessed for its effects on
   abuse prevention, accessibility support, and the stated capacity target? [Assumption, Spec
   §Assumptions]
-- [ ] CHK025 Are the production-ingress privacy and timeout requirements defined as feature
+- [x] CHK025 Are the production-ingress privacy and timeout requirements defined as feature
   dependencies with an accountable deployment boundary? [Dependency, Plan §Technical Context;
   Contract §Operational Contract]
-- [ ] CHK026 Is the explicit future LLM/ML extensibility goal bounded so that it does not imply
+- [x] CHK026 Is the explicit future LLM/ML extensibility goal bounded so that it does not imply
   current model, transcript, authentication, or persistence requirements? [Scope, Plan §Summary;
   Plan §Project Structure]
 

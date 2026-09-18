@@ -35,10 +35,10 @@ independently.
 
 **Purpose**: Establish the single Python web-application project and development dependencies.
 
-- [ ] T001 Create the pinned Python 3.14 Gradio 6.x project and development dependencies in `pyproject.toml`.
-- [ ] T002 [P] Create the `src/__init__.py` package marker and application source directory structure in `src/__init__.py`.
-- [ ] T003 [P] Configure pytest and pytest-playwright test discovery in `pyproject.toml`.
-- [ ] T004 [P] Document the Python 3.14 virtual-environment and dependency-installation workflow in `requirements-dev.txt`.
+- [X] T001 Define Python `>=3.14,<3.15` project metadata, add an exact pinned `gradio==6.x.y` runtime dependency, and add a `dev` optional-dependency group containing `pytest` and `pytest-playwright` in `pyproject.toml`; keep k6 out of Python dependencies because it is an external release-test prerequisite.
+- [X] T002 [P] Create the `src/__init__.py` package marker and application source directory structure in `src/__init__.py`.
+- [X] T003 [P] Configure pytest and pytest-playwright test discovery in `pyproject.toml`.
+- [X] T004 [P] Document `python -m pip install -e ".[dev]"`, `playwright install`, and the externally installed k6 prerequisite in `specs/001-echo-web-chat/quickstart.md`.
 
 ---
 
@@ -49,9 +49,9 @@ both user stories.
 
 **⚠️ CRITICAL**: Complete this phase before user-story implementation.
 
-- [ ] T005 Implement fixed-cardinality, content-free outcome, duration, queue-depth, and health diagnostics in `src/observability.py`.
-- [ ] T006 Implement a same-origin Gradio application entry point with health/readiness handling, finite queue configuration, at-least-50 handler concurrency, analytics disabled, and no application-created persistence in `src/app.py`.
-- [ ] T007 Add privacy and health integration coverage that rejects message content and visitor identifiers from diagnostics in `tests/integration/test_app.py`.
+- [X] T005 Implement fixed-cardinality, content-free outcome, duration, queue-depth, and health diagnostics in `src/observability.py`.
+- [X] T006 Implement a same-origin Gradio application entry point with health/readiness handling, finite queue configuration, at-least-50 handler concurrency, analytics disabled, and no application-created persistence in `src/app.py`.
+- [X] T007 Add privacy and health integration coverage that rejects message content and visitor identifiers from diagnostics in `tests/integration/test_app.py`.
 
 **Checkpoint**: Shared application and observability foundations are ready for story work.
 
@@ -68,16 +68,16 @@ pairs, history remains visible and a new conversation can be started.
 
 ### Tests for User Story 1
 
-- [ ] T008 [P] [US1] Add pure validation and successful state-transition tests for "`content` | String | Required; contains a non-whitespace character; at most 4,096 Unicode code points; preserved exactly if accepted" in `tests/unit/test_echo.py`.
-- [ ] T009 [P] [US1] Add callback integration tests for one exact ordered `user`/`assistant` pair, transient history, and the 50-completed-pair limit in `tests/integration/test_app.py`.
-- [ ] T010 [P] [US1] Add browser E2E coverage for normal, Unicode, line-break, and 50-pair/new-conversation journeys in `tests/e2e/test_echo_chat.py`.
+- [X] T008 [P] [US1] Add pure validation and successful state-transition tests for "`content` | String | Required; contains a non-whitespace character; at most 4,096 Unicode code points; preserved exactly if accepted" in `tests/unit/test_echo.py`.
+- [X] T009 [P] [US1] Add callback integration tests for one exact ordered `user`/`assistant` pair, transient history, and the 50-completed-pair limit in `tests/integration/test_app.py`.
+- [X] T010 [P] [US1] Add browser E2E coverage for normal, Unicode, line-break, and 50-pair/new-conversation journeys in `tests/e2e/test_echo_chat.py`.
 
 ### Implementation for User Story 1
 
-- [ ] T011 [US1] Implement transient chat-message and active-conversation state, including `history`, `pending_text`, and `submission_state`, in `src/echo.py`.
-- [ ] T012 [US1] Implement exact-input validation and successful state transitions in `src/echo.py` so accepted content is never trimmed, normalized, or transformed and success appends exactly one `user` message followed by one `assistant` message.
-- [ ] T013 [US1] Implement the text-only Gradio chat page, Send handling, ordered conversation presentation, and 50-pair limit state in `src/app.py`.
-- [ ] T014 [US1] Add the accessible Start New Conversation control that clears only transient conversation state after the pair limit in `src/app.py`.
+- [X] T011 [US1] Implement transient chat-message and active-conversation state, including `history`, `pending_text`, and `submission_state`, in `src/echo.py`.
+- [X] T012 [US1] Implement exact-input validation and successful state transitions in `src/echo.py` so accepted content is never trimmed, normalized, or transformed and success appends exactly one `user` message followed by one `assistant` message.
+- [X] T013 [US1] Implement the text-only Gradio chat page, Send handling, ordered conversation presentation, and 50-pair limit state in `src/app.py`.
+- [X] T014 [US1] Add the accessible Start New Conversation control that clears only transient conversation state after the pair limit in `src/app.py`.
 
 **Checkpoint**: User Story 1 delivers the independently testable MVP echo workflow.
 
@@ -94,14 +94,14 @@ and Retry creates one ordered pair when the failure is restored.
 
 ### Tests for User Story 2
 
-- [ ] T015 [P] [US2] Add unit tests for blank, whitespace-only, exactly-4,096-code-point, and 4,097-code-point input, plus failed-to-retry state transitions, in `tests/unit/test_echo.py`.
-- [ ] T016 [P] [US2] Add integration tests for callback failure, mismatched callback output, retained pending text, preserved history, and duplicate-prevention during sending in `tests/integration/test_app.py`.
-- [ ] T017 [P] [US2] Add browser E2E coverage for accessible validation, error status, keyboard-reachable Retry, and successful recovery in `tests/e2e/test_echo_chat.py`.
+- [X] T015 [P] [US2] Add unit tests for blank, whitespace-only, exactly-4,096-code-point, and 4,097-code-point input, plus failed-to-retry state transitions, in `tests/unit/test_echo.py`.
+- [X] T016 [P] [US2] Add integration tests for callback failure, mismatched callback output, retained pending text, preserved history, and duplicate-prevention during sending in `tests/integration/test_app.py`.
+- [X] T017 [P] [US2] Add browser E2E coverage for accessible validation, error status, keyboard-reachable Retry, and successful recovery in `tests/e2e/test_echo_chat.py`.
 
 ### Implementation for User Story 2
 
-- [ ] T018 [US2] Implement validation and operational-failure transitions in `src/echo.py` so invalid or failed attempts append no messages, retain required state, and prevent duplicate or reordered pairs while sending.
-- [ ] T019 [US2] Implement accessible blank/oversize feedback, content-preserving operational errors, and keyboard-reachable Retry wiring in `src/app.py`.
+- [X] T018 [US2] Implement validation and operational-failure transitions in `src/echo.py` so invalid or failed attempts append no messages, retain required state, and prevent duplicate or reordered pairs while sending.
+- [X] T019 [US2] Implement accessible blank/oversize feedback, content-preserving operational errors, and keyboard-reachable Retry wiring in `src/app.py`.
 
 **Checkpoint**: User Stories 1 and 2 are independently testable with recovery and validation.
 
@@ -111,10 +111,14 @@ and Retry creates one ordered pair when the failure is restored.
 
 **Purpose**: Complete release-facing accessibility, privacy, performance, and operational coverage.
 
-- [ ] T020 [P] Add a 50-virtual-user, 5-to-10-minute release-candidate p95-under-one-second scenario with exact-echo and queue-saturation assertions in `load/echo_load.js`.
-- [ ] T021 [P] Add integration coverage that confirms text-only rendering and prohibits Markdown, HTML, rich content, browser restoration, cookies, uploads, analytics, feedback, and sharing in `tests/integration/test_app.py`.
-- [ ] T022 Document application launch, browser validation, diagnostics inspection, and the release load command in `specs/001-echo-web-chat/quickstart.md`.
-- [ ] T023 Run the complete unit, integration, browser E2E, and release-load validation workflow described in `specs/001-echo-web-chat/quickstart.md`.
+- [X] T020 [P] Add a 50-virtual-user, 5-to-10-minute release-candidate p95-under-one-second scenario with exact-echo and queue-saturation assertions in `load/echo_load.js`.
+- [X] T021 [P] Add integration coverage that confirms text-only rendering and prohibits Markdown, HTML, rich content, browser restoration, cookies, uploads, analytics, feedback, and sharing in `tests/integration/test_app.py`.
+- [X] T022 Document application launch, browser validation, diagnostics inspection, and the release load command in `specs/001-echo-web-chat/quickstart.md`.
+- [ ] T023 Obtain platform-owner confirmation of same-origin HTTPS, finite ingress timeouts, and disabled request/response body logging for the echo route in `specs/001-echo-web-chat/quickstart.md`.
+- [ ] T024 Validate the deployed echo route's HTTPS, timeout, and body-log suppression controls in `specs/001-echo-web-chat/quickstart.md`.
+- [ ] T025 Execute the rollout readiness checks and record the content-free monitoring and rollback triggers in `specs/001-echo-web-chat/quickstart.md`.
+- [ ] T026 Execute and document the application-route withdrawal and post-rollback transient-data verification procedure in `specs/001-echo-web-chat/quickstart.md`.
+- [ ] T027 Run the complete unit, integration, browser E2E, and release-load validation workflow described in `specs/001-echo-web-chat/quickstart.md`.
 
 ---
 

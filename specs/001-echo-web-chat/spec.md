@@ -103,7 +103,6 @@ confirms the former is not sent and the latter can be retried while prior messag
   visitor sees the echo reply within 1 second of sending the message.
 - **SC-002**: At least 99% of valid submissions receive one and only one echo reply containing
   the identical submitted text.
-  without assistance in usability testing.
 - **SC-003**: The service supports 50 concurrent active chat sessions while meeting SC-001.
 - **SC-004**: In 100% of tested blank, oversized, and failed-submission cases, the visitor
   receives actionable feedback and no previously visible messages are lost.
@@ -112,7 +111,7 @@ confirms the former is not sent and the latter can be retried while prior messag
 
 - The initial release supports unauthenticated visitors using a modern desktop or mobile web
   browser.
-- An active browser session is the boundary for a conversation; closing or refreshing the page may
+- An active browser session is the boundary for a conversation; closing or refreshing the page will
   start a new conversation.
 - Echo replies add no interpretation, enrichment, or automated response beyond returning the exact
   submitted text.

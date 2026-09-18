@@ -14,73 +14,73 @@ quality. It does not mean implementation work is complete.
 
 ## Requirement Completeness
 
-- [ ] CHK001 Are requirements defined for every stage of a conversation: initial input, successful
+- [x] CHK001 Are requirements defined for every stage of a conversation: initial input, successful
   pair creation, validation feedback, operational failure, retry, limit state, and new
   conversation? [Completeness, Spec §User Scenarios & Testing; Spec §FR-001–FR-009]
-- [ ] CHK002 Is the scope boundary for the active conversation defined consistently with excluded
+- [x] CHK002 Is the scope boundary for the active conversation defined consistently with excluded
   persistent transcripts, accounts, attachments, moderation, and integrations? [Completeness,
   Spec §Key Entities; Spec §Assumptions]
-- [ ] CHK003 Are the requirements for the exact text, message roles, and chronological pair order
+- [x] CHK003 Are the requirements for the exact text, message roles, and chronological pair order
   sufficient to determine the required conversation record without unstated rules? [Completeness,
   Spec §FR-002–FR-003; Spec §Key Entities]
 
 ## Requirement Clarity and Consistency
 
-- [ ] CHK004 Is the definition of an accepted submission clear enough to distinguish valid,
+- [x] CHK004 Is the definition of an accepted submission clear enough to distinguish valid,
   blank, oversized, failed, repeated, and limit-blocked input? [Clarity, Spec §FR-004–FR-006;
   Spec §FR-009; Spec §Edge Cases]
-- [ ] CHK005 Are the terms "active browser session," "completed message pair," and "new empty
+- [x] CHK005 Are the terms "active browser session," "completed message pair," and "new empty
   conversation" defined without ambiguity about refresh, browser closure, or prior visible
   messages? [Ambiguity, Spec §FR-003; Spec §FR-009; Spec §Assumptions]
-- [ ] CHK006 Are the exact-echo requirements consistent with the stated handling of punctuation,
+- [x] CHK006 Are the exact-echo requirements consistent with the stated handling of punctuation,
   line breaks, non-English characters, whitespace-only input, and Unicode code points?
   [Consistency, Spec §FR-002; Spec §FR-004–FR-005; Spec §Edge Cases]
-- [ ] CHK007 Are the no-account and no-personal-information requirements consistent with all
+- [x] CHK007 Are the no-account and no-personal-information requirements consistent with all
   stated error, recovery, and session requirements? [Consistency, Spec §FR-006–FR-008]
 
 ## Acceptance Criteria Quality
 
-- [ ] CHK008 Is "normal operating conditions" defined with a measurable workload, message size,
+- [x] CHK008 Is "normal operating conditions" defined with a measurable workload, message size,
   and response-time measurement boundary for SC-001? [Ambiguity, Spec §SC-001]
-- [ ] CHK009 Can the 99% exact-echo outcome be reconciled with the unconditional requirement for
+- [x] CHK009 Can the 99% exact-echo outcome be reconciled with the unconditional requirement for
   every successful submission to have exactly one identical reply? [Consistency, Spec §FR-002;
   Spec §SC-002]
-- [ ] CHK010 Are the 50-session capacity and 50-pair conversation limits specified with distinct
+- [x] CHK010 Are the 50-session capacity and 50-pair conversation limits specified with distinct
   measurement conditions and success boundaries? [Clarity, Spec §FR-003; Spec §SC-004]
-- [ ] CHK011 Is the usability outcome defined with a representative participant population,
+- [x] CHK011 Is the usability outcome defined with a representative participant population,
   first-message task, and objective definition of "without assistance"? [Measurability, Spec
   §SC-003]
 
 ## Scenario and Edge-Case Coverage
 
-- [ ] CHK012 Are alternate and exception-flow requirements complete for retrying an unsuccessful
+- [x] CHK012 Are alternate and exception-flow requirements complete for retrying an unsuccessful
   valid submission while retaining the input and prior conversation? [Coverage, Spec §User Story
   2; Spec §FR-006]
-- [ ] CHK013 Are requirements defined for input entered at or after the 50-pair boundary,
+- [x] CHK013 Are requirements defined for input entered at or after the 50-pair boundary,
   including its disposition when a new conversation is started? [Gap, Spec §FR-009; Spec §Edge
   Cases]
-- [ ] CHK014 Are repeated or concurrent submission scenarios addressed with requirements that
+- [x] CHK014 Are repeated or concurrent submission scenarios addressed with requirements that
   prevent unclear pairing, ordering, or duplication outcomes? [Gap, Spec §FR-002–FR-003; Spec
   §Edge Cases]
 
 ## Non-Functional Requirements
 
-- [ ] CHK015 Are accessible feedback and recovery requirements explicit enough to cover the
+- [x] CHK015 Are accessible feedback and recovery requirements explicit enough to cover the
   validation message, operational error, and new-conversation control beyond calling them
   "accessible"? [Clarity, Spec §FR-004; Spec §FR-006; Spec §FR-009]
-- [ ] CHK016 Are the privacy requirements sufficiently specific about the permitted transient
+- [x] CHK016 Are the privacy requirements sufficiently specific about the permitted transient
   message boundary and the prohibited retention surfaces? [Completeness, Spec §FR-007–FR-008;
   Spec §Assumptions]
-- [ ] CHK017 Are performance and capacity requirements complete for the failure or degradation
+- [x] CHK017 Are performance and capacity requirements complete for the failure or degradation
   conditions that may prevent the success outcomes from being met? [Gap, Spec §SC-001; Spec
   §SC-004–SC-005]
 
 ## Dependencies and Assumptions
 
-- [ ] CHK018 Is the assumption that refresh may begin a new conversation consistent with the
+- [x] CHK018 Is the assumption that refresh may begin a new conversation consistent with the
   requirement to preserve the active session's display and with the privacy boundary?
   [Assumption, Spec §FR-003; Spec §FR-008; Spec §Assumptions]
-- [ ] CHK019 Are supported-browser, accessibility, transport, and deployment assumptions
+- [x] CHK019 Are supported-browser, accessibility, transport, and deployment assumptions
   documented where they materially affect the stated visitor experience and privacy outcomes?
   [Gap, Spec §Assumptions; Spec §FR-004; Spec §FR-006–FR-008]
 
