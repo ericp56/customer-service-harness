@@ -3,12 +3,24 @@
 from __future__ import annotations
 
 from src import app
-from src.echo import MAX_COMPLETED_PAIRS, ActiveConversation, Outcome, new_conversation
+import pytest
+
+from src.ai_client import ModelReply
+from src.chat import MAX_COMPLETED_PAIRS, ActiveConversation, Outcome, new_conversation
 from src.observability import DiagnosticOutcome
 
 
 def state_from_result(result: app.CallbackResult) -> ActiveConversation:
     return result.state
+
+
+@pytest.fixture(autouse=True)
+def fake_reply(monkeypatch):
+    monkeypatch.setattr(
+        app,
+        "generate_reply",
+        lambda text, history: ModelReply(f"Answer: {text}"),
+    )
 
 
 def test_send_callback_creates_one_exact_ordered_pair() -> None:
@@ -19,7 +31,7 @@ def test_send_callback_creates_one_exact_ordered_pair() -> None:
     assert result.input_value == ""
     assert [(item["role"], item["content"]) for item in result.history] == [
         ("user", content),
-        ("assistant", content),
+        ("assistant", f"Answer: {content}"),
     ]
     assert result.state.pending_text is None
 
@@ -48,10 +60,10 @@ def test_limit_preserves_history_and_requires_new_conversation() -> None:
 def test_callback_failure_retains_input_and_prior_history(monkeypatch) -> None:
     prior = app.send_message("previous", new_conversation()).state
 
-    def fail(_: str) -> str:
-        raise app.EchoOperationalError()
+    def fail(_: str, __: tuple) -> ModelReply:
+        raise app.AIServiceError()
 
-    monkeypatch.setattr(app, "generate_echo", fail)
+    monkeypatch.setattr(app, "generate_reply", fail)
     failed = app.send_message("retain me", prior)
 
     assert failed.outcome is Outcome.FAILED
@@ -60,28 +72,28 @@ def test_callback_failure_retains_input_and_prior_history(monkeypatch) -> None:
     assert "Retry" in failed.status_text
 
 
-def test_mismatched_callback_output_is_a_retryable_failure(monkeypatch) -> None:
-    monkeypatch.setattr(app, "generate_echo", lambda _: "not exact")
+def test_empty_callback_output_is_a_retryable_failure(monkeypatch) -> None:
+    monkeypatch.setattr(app, "generate_reply", lambda *_: ModelReply(""))
 
     failed = app.send_message("original", new_conversation())
 
-    assert failed.outcome is Outcome.MISMATCHED_ECHO
+    assert failed.outcome is Outcome.FAILED
     assert failed.history == []
     assert failed.state.pending_text == "original"
     assert failed.retry_visible
 
 
 def test_retry_uses_retained_input_without_duplicate_pairs(monkeypatch) -> None:
-    monkeypatch.setattr(app, "generate_echo", lambda _: (_ for _ in ()).throw(app.EchoOperationalError()))
+    monkeypatch.setattr(app, "generate_reply", lambda *_: (_ for _ in ()).throw(app.AIServiceError()))
     failed = app.send_message("retry", new_conversation())
-    monkeypatch.setattr(app, "generate_echo", lambda text: text)
+    monkeypatch.setattr(app, "generate_reply", lambda text, history: ModelReply(f"Answer: {text}"))
 
     recovered = app.retry_message(failed.state)
 
     assert recovered.outcome is Outcome.SENT
     assert [(item["role"], item["content"]) for item in recovered.history] == [
         ("user", "retry"),
-        ("assistant", "retry"),
+        ("assistant", "Answer: retry"),
     ]
 
 
@@ -147,4 +159,10 @@ def test_app_disables_rich_features_and_persistence() -> None:
 
 
 def test_health_readiness_is_content_free() -> None:
-    assert app.health_status() == {"status": "ready"}
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    monkeypatch.setenv("OPENAI_MODEL", "test-model")
+    try:
+        assert app.health_status() == {"status": "ready"}
+    finally:
+        monkeypatch.undo()

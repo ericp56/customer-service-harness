@@ -1,8 +1,63 @@
+# Local environment and secrets
 .env
+.env.*
+!.env.example
+
+# Python bytecode and caches
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+.Python
 .pytest_cache/
+.mypy_cache/
+.pyre/
+.pytype/
+.ruff_cache/
+.hypothesis/
+.tox/
+.nox/
+
+# Virtual environments
 .venv/
 venv/
+env/
+ENV/
+
+# Python packaging and build output
+build/
 dist/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
 *.egg-info/
+*.egg
+.installed.cfg
+MANIFEST
+
+# Test and coverage output
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Type-checker and notebook state
+.dmypy.json
+dmypy.json
+.ipynb_checkpoints/
+
+# Editor and operating-system files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db

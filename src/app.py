@@ -11,8 +11,10 @@ import gradio as gr
 import uvicorn
 from fastapi import FastAPI
 
-from src.echo import (
+from src.ai_client import AIServiceError, InvalidConfigurationError, generate_reply, load_configuration
+from src.chat import (
     ActiveConversation,
+    ChatMessage,
     Outcome,
     SubmissionState,
     begin_retry,
@@ -25,10 +27,6 @@ from src.observability import DiagnosticOutcome, Diagnostics, HealthStatus
 
 DIAGNOSTICS = Diagnostics()
 StatusRole = Literal["status", "alert"]
-
-
-class EchoOperationalError(RuntimeError):
-    """A declared, content-free operational failure from the echo operation."""
 
 
 @dataclass(frozen=True)
@@ -46,17 +44,16 @@ class CallbackResult:
     send_enabled: bool
 
 
-def generate_echo(content: str) -> str:
-    """Return the exact input; tests can replace this declared operation."""
-    return content
-
-
 def initial_state() -> ActiveConversation:
     return new_conversation()
 
 
 def render_history(state: ActiveConversation) -> list[dict[str, str]]:
-    return [{"role": item.role, "content": item.content} for item in state.history]
+    return [
+        {"role": item.role, "content": item.content}
+        for item in state.history
+        if isinstance(item, ChatMessage)
+    ]
 
 
 def privacy_configuration() -> dict[str, bool]:
@@ -73,6 +70,10 @@ def privacy_configuration() -> dict[str, bool]:
 
 def health_status() -> dict[str, str]:
     """Expose only content-free readiness information."""
+    try:
+        load_configuration()
+    except InvalidConfigurationError as error:
+        return {"status": HealthStatus.NOT_READY.value}
     return {"status": DIAGNOSTICS.health().value}
 
 
@@ -87,11 +88,10 @@ def diagnostics_snapshot() -> dict[str, object]:
 
 def _status(outcome: Outcome) -> tuple[StatusRole, str]:
     messages: dict[Outcome, tuple[StatusRole, str]] = {
-        Outcome.SENT: ("status", "Message sent and echoed."),
+        Outcome.SENT: ("status", "Message sent."),
         Outcome.BLANK: ("alert", "Enter at least one non-whitespace character before sending."),
         Outcome.TOO_LONG: ("alert", "Messages must contain no more than 4,096 Unicode code points."),
         Outcome.FAILED: ("alert", "The message could not be sent. Retry is available."),
-        Outcome.MISMATCHED_ECHO: ("alert", "The message could not be verified. Retry is available."),
         Outcome.ALREADY_SENDING: ("status", "A message is already being sent."),
         Outcome.LIMIT_REACHED: (
             "alert",
@@ -109,7 +109,6 @@ def _diagnostic_outcome(outcome: Outcome) -> DiagnosticOutcome | None:
         Outcome.BLANK: DiagnosticOutcome.VALIDATION_BLANK,
         Outcome.TOO_LONG: DiagnosticOutcome.VALIDATION_TOO_LONG,
         Outcome.FAILED: DiagnosticOutcome.OPERATIONAL_FAILURE,
-        Outcome.MISMATCHED_ECHO: DiagnosticOutcome.ECHO_MISMATCH,
         Outcome.LIMIT_REACHED: DiagnosticOutcome.LIMIT_REACHED,
         Outcome.ALREADY_SENDING: DiagnosticOutcome.DUPLICATE_PREVENTED,
     }
@@ -136,16 +135,25 @@ def _callback_result(state: ActiveConversation, outcome: Outcome, input_value: s
 def _finish_sending(state: ActiveConversation, started_at: float) -> CallbackResult:
     assert state.pending_text is not None
     try:
-        echoed = generate_echo(state.pending_text)
-    except EchoOperationalError:
+        reply = generate_reply(state.pending_text, state.history)
+    except InvalidConfigurationError as error:
+        failed = fail_submission(state)
+        DIAGNOSTICS.record(
+            DiagnosticOutcome.INVALID_CONFIGURATION,
+            started_at=started_at,
+            error=error,
+        )
+        return _callback_result(failed.state, failed.outcome, state.pending_text)
+    except AIServiceError as error:
         failed = fail_submission(state)
         DIAGNOSTICS.record(
             DiagnosticOutcome.OPERATIONAL_FAILURE,
             started_at=started_at,
+            error=error,
         )
         return _callback_result(failed.state, failed.outcome, state.pending_text)
 
-    completed = complete_submission(state, echoed)
+    completed = complete_submission(state, reply.content, reply.tool_invocations)
     diagnostic_outcome = _diagnostic_outcome(completed.outcome)
     if diagnostic_outcome is not None:
         DIAGNOSTICS.record(diagnostic_outcome, started_at=started_at)

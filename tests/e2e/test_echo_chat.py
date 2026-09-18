@@ -11,9 +11,15 @@ import uvicorn
 from playwright.sync_api import expect
 
 from src import app
+from src.ai_client import ModelReply
 
 
 pytestmark = pytest.mark.e2e
+
+
+@pytest.fixture(autouse=True)
+def fake_reply(monkeypatch):
+    monkeypatch.setattr(app, "generate_reply", lambda text, history: ModelReply(f"Answer: {text}"))
 
 
 @pytest.fixture(scope="session")
@@ -59,14 +65,14 @@ def submit(page, text: str) -> None:
     page.locator("#echo-send").click()
 
 
-def test_normal_unicode_and_line_break_echo(page, echo_url: str) -> None:
+def test_normal_unicode_and_line_break_reply(page, echo_url: str) -> None:
     page.goto(echo_url)
     text = "Hello\n世界 <tag>"
 
     submit(page, text)
 
     conversation = page.locator("#echo-conversation")
-    expect(conversation).to_contain_text("Hello")
+    expect(conversation).to_contain_text("Answer:")
     expect(conversation).to_contain_text("世界")
     expect(conversation).to_contain_text("<tag>")
     assert conversation.locator("script").count() == 0
@@ -88,16 +94,16 @@ def test_accessible_validation_and_recovery(page, echo_url: str) -> None:
 def test_keyboard_retry_recovers_a_declared_operational_failure(page, echo_url: str, monkeypatch) -> None:
     page.goto(echo_url)
 
-    def fail(_: str) -> str:
-        raise app.EchoOperationalError()
+    def fail(_: str, __: tuple) -> ModelReply:
+        raise app.AIServiceError()
 
-    monkeypatch.setattr(app, "generate_echo", fail)
+    monkeypatch.setattr(app, "generate_reply", fail)
     submit(page, "retry this")
     expect(page.locator("#echo-status [role='alert']")).to_contain_text("Retry is available")
     retry = page.locator("#echo-retry")
     expect(retry).to_be_visible()
 
-    monkeypatch.setattr(app, "generate_echo", lambda text: text)
+    monkeypatch.setattr(app, "generate_reply", lambda text, history: ModelReply(f"Answer: {text}"))
     retry.focus()
     retry.press("Enter")
     expect(page.locator("#echo-conversation [role='log']")).to_contain_text("retry this")

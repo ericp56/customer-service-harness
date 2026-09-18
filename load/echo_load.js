@@ -4,21 +4,21 @@ import { Rate, Trend } from "k6/metrics";
 
 const target = (__ENV.TARGET_URL || "http://127.0.0.1:7860").replace(/\/$/, "");
 const duration = __ENV.LOAD_DURATION || "5m";
-const echoVisible = new Trend("echo_visible_ms");
-const exactEcho = new Rate("exact_echo");
+const replyVisible = new Trend("reply_visible_ms");
+const generatedReply = new Rate("generated_reply");
 const queueSaturation = new Rate("queue_saturation");
 
 export const options = {
   scenarios: {
-    echo_release_candidate: {
+    chat_release_candidate: {
       executor: "constant-vus",
       vus: 50,
       duration,
     },
   },
   thresholds: {
-    echo_visible_ms: ["p(95)<1000"],
-    exact_echo: ["rate==1"],
+    reply_visible_ms: ["p(95)<10000"],
+    generated_reply: ["rate==1"],
     queue_saturation: ["rate==0"],
   },
 };
@@ -47,7 +47,7 @@ export default function () {
   });
   queueSaturation.add(!accepted && (submit.status === 429 || submit.status === 503));
   if (!accepted) {
-    fail(`Echo submission was not accepted (HTTP ${submit.status}).`);
+    fail(`Chat submission was not accepted (HTTP ${submit.status}).`);
   }
 
   const eventId = submit.json("event_id");
@@ -60,13 +60,13 @@ export default function () {
     messages[1].content &&
     messages[1].content[0] &&
     messages[1].content[0].text;
-  const isExact = messages && messages[0].content[0].text === message && responseText === message;
+  const isGenerated = messages && messages[0].content[0].text === message && responseText && responseText !== message;
 
-  echoVisible.add(Date.now() - startedAt);
-  exactEcho.add(Boolean(isExact));
+  replyVisible.add(Date.now() - startedAt);
+  generatedReply.add(Boolean(isGenerated));
   queueSaturation.add(completed.status === 429 || completed.status === 503);
   check(completed, {
-    "echo event completed": (response) => response.status === 200 && Boolean(payload),
-    "one exact user and assistant pair": () => Boolean(isExact),
+    "chat event completed": (response) => response.status === 200 && Boolean(payload),
+    "one generated user and assistant pair": () => Boolean(isGenerated),
   });
 }

@@ -1,1 +1,3 @@
-{"feature_directory":"specs/001-echo-web-chat"}
+{
+  "feature_directory": "specs/001-ai-chat-integration"
+}

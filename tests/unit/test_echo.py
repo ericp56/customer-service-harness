@@ -1,4 +1,4 @@
-from src.echo import (
+from src.chat import (
     MAX_COMPLETED_PAIRS,
     MAX_MESSAGE_LENGTH,
     ActiveConversation,
@@ -22,16 +22,16 @@ def complete(state: ActiveConversation, text: str) -> ActiveConversation:
     return completed.state
 
 
-def test_accepts_and_preserves_exact_input() -> None:
+def test_accepts_and_preserves_generated_reply() -> None:
     content = "  Héllo, <tag>!\n次の行  "
     started = begin_submission(new_conversation(), content)
 
     assert started.state.pending_text == content
-    finished = complete_submission(started.state, content)
+    finished = complete_submission(started.state, "Generated response")
 
     assert [(message.role, message.content) for message in finished.state.history] == [
         ("user", content),
-        ("assistant", content),
+        ("assistant", "Generated response"),
     ]
     assert finished.state.pending_text is None
     assert finished.state.submission_state is SubmissionState.IDLE
@@ -70,11 +70,11 @@ def test_failed_submission_retains_exact_input_and_retry_appends_once() -> None:
     assert complete_after_retry.state.history[1].content == original
 
 
-def test_mismatched_echo_fails_without_a_partial_pair() -> None:
+def test_empty_reply_fails_without_a_partial_pair() -> None:
     started = begin_submission(new_conversation(), "original")
-    finished = complete_submission(started.state, "changed")
+    finished = complete_submission(started.state, "")
 
-    assert finished.outcome is Outcome.MISMATCHED_ECHO
+    assert finished.outcome is Outcome.FAILED
     assert finished.state.history == ()
     assert finished.state.pending_text == "original"
     assert finished.state.submission_state is SubmissionState.FAILED
