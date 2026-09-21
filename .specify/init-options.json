@@ -1,9 +1,9 @@
 {
-  "ai": "copilot",
+  "ai": "grok",
   "ai_skills": true,
   "feature_numbering": "sequential",
   "here": false,
-  "integration": "copilot",
+  "integration": "grok",
   "script": "sh",
-  "speckit_version": "1.0.6"
+  "speckit_version": "1.0.9"
 }
