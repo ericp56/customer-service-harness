@@ -115,7 +115,7 @@ criteria without adding scope.
 - [X] T026 [P] Update AI chat behavior, required environment variables, compatible-service contract, and privacy constraints in `README.md`.
 - [X] T027 Update the 100-submission release-candidate scenario and 10-second p95 threshold in `load/echo_load.js`.
 - [X] T028 Run the full deterministic test suite and correct any implementation regressions in `tests/`.
-- [ ] T029 Run the quickstart configuration, generated-answer, conversation-context, tool, failure, privacy, and release-candidate checks in `specs/001-ai-chat-integration/quickstart.md`.
+- [X] T029 Run the quickstart configuration, generated-answer, conversation-context, tool, failure, privacy, and release-candidate checks in `specs/001-ai-chat-integration/quickstart.md`.
 
 ---
 
@@ -146,7 +146,7 @@ boundary and validate the p95-under-5-seconds complete-response target.
 - [X] T038 [US1] Instrument every outbound Responses API invocation and the bounded `getCurrentDateTimeIso` capability invocation with the quoted "`model_request`" and "`date_time_tool`" timing records in `src/ai_client.py`.
 - [X] T039 [US1] Instrument the complete blocking send and retry paths with the quoted "`chat_submission`" timing record in `src/app.py`.
 - [X] T040 [P] Update the p95-under-5-seconds, 10-second-hard-timeout release check and latency-diagnostic documentation in `load/echo_load.js`, `README.md`, and `specs/001-ai-chat-integration/quickstart.md`.
-- [ ] T041 Run deterministic timing-record and full regression coverage, then execute the 100-submission load scenario when the external prerequisites are available, in `tests/` and `load/echo_load.js`.
+- [X] T041 Run deterministic timing-record and full regression coverage, then execute the 100-submission load scenario when the external prerequisites are available, in `tests/` and `load/echo_load.js`.
 
 **Checkpoint**: Every blocking chat-path step emits a privacy-safe elapsed-millisecond diagnostic,
 and the release scenario verifies p95 completion under 5 seconds without a submission exceeding
@@ -222,3 +222,10 @@ the shared tool registry, adapter, and UI integration in dependency order.
 
 Every task uses a checkbox, sequential `T###` identifier, exact file path, and a `[US#]` label for
 story-specific work. `[P]` appears only where files and prerequisites permit independent work.
+
+## Phase 9: Convergence
+
+- [X] T042 CRITICAL: Distinguish invalid configuration, timeout or unavailability, provider rejection, and unusable responses as content-free stdout outcomes, and stop emitting a success message for failed `model_request` or `date_time_tool` steps, in `src/ai_client.py`, `src/app.py`, and `src/observability.py` per Constitution VI (contradicts)
+- [X] T043 Align `load/echo_load.js` to a 100-submission release check whose p95 completion is under 5 seconds and whose hard ceiling rejects any submission over 10 seconds per SC-002 (partial)
+- [X] T044 State in the accessible AI-service failure status in `src/app.py` that the answer could not be obtained and that the user should try again, preserving the retry control per US3/AC1 (partial)
+- [X] T045 Add deterministic tests for a permitted `getCurrentDateTimeIso` round trip, rejected non-empty arguments, a repeated tool loop, `not_ready` when required configuration is missing, and the JSON serialization fallback in `tests/unit/test_ai_client.py`, `tests/integration/test_app.py`, and `tests/unit/test_observability.py` per plan: testing decision (partial)

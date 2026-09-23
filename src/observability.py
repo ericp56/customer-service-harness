@@ -90,12 +90,15 @@ class Diagnostics:
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "component": step,
             "level": "ERROR" if error else "INFO",
-            "message": _sanitize(str(error)) if error else outcome.value,
+            "message": outcome.value,
             "step": step,
             "duration_ms": max(0, round((monotonic() - started_at) * 1000)),
         }
         if error:
-            stack = [f"{frame.filename}:{frame.lineno}" for frame in traceback.extract_tb(error.__traceback__)]
+            stack = [
+                _sanitize(f"{frame.filename}:{frame.lineno}")
+                for frame in traceback.extract_tb(error.__traceback__)
+            ]
             if stack:
                 payload["stack"] = stack
         try:
@@ -113,8 +116,14 @@ def _sanitize(message: str) -> str:
     return message
 
 
-def record_timing(step: str, started_at: float) -> None:
+def record_timing(
+    step: str,
+    started_at: float,
+    *,
+    outcome: DiagnosticOutcome = DiagnosticOutcome.SUCCESS,
+    error: BaseException | None = None,
+) -> None:
     """Emit a content-free duration record for an allowlisted blocking step."""
     if step not in {"model_request", "date_time_tool"}:
         raise ValueError("unsupported diagnostic step")
-    Diagnostics().record(DiagnosticOutcome.SUCCESS, started_at=started_at, step=step)
+    Diagnostics().record(outcome, started_at=started_at, error=error, step=step)

@@ -3,7 +3,6 @@ import { check, fail } from "k6";
 import { Rate, Trend } from "k6/metrics";
 
 const target = (__ENV.TARGET_URL || "http://127.0.0.1:7860").replace(/\/$/, "");
-const duration = __ENV.LOAD_DURATION || "5m";
 const replyVisible = new Trend("reply_visible_ms");
 const generatedReply = new Rate("generated_reply");
 const queueSaturation = new Rate("queue_saturation");
@@ -11,13 +10,14 @@ const queueSaturation = new Rate("queue_saturation");
 export const options = {
   scenarios: {
     chat_release_candidate: {
-      executor: "constant-vus",
+      executor: "shared-iterations",
       vus: 50,
-      duration,
+      iterations: 100,
+      maxDuration: "3m",
     },
   },
   thresholds: {
-    reply_visible_ms: ["p(95)<10000"],
+    reply_visible_ms: ["p(95)<5000", "max<=10000"],
     generated_reply: ["rate==1"],
     queue_saturation: ["rate==0"],
   },

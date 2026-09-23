@@ -99,7 +99,8 @@ def test_keyboard_retry_recovers_a_declared_operational_failure(page, echo_url: 
 
     monkeypatch.setattr(app, "generate_reply", fail)
     submit(page, "retry this")
-    expect(page.locator("#echo-status [role='alert']")).to_contain_text("Retry is available")
+    expect(page.locator("#echo-status [role='alert']")).to_contain_text("could not be obtained")
+    expect(page.locator("#echo-status [role='alert']")).to_contain_text("Try again")
     retry = page.locator("#echo-retry")
     expect(retry).to_be_visible()
 

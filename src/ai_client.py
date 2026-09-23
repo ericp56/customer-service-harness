@@ -7,14 +7,14 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
-from typing import Any, Iterable
+from typing import Any, Iterable, NoReturn
 from urllib.parse import urlparse
 
 import openai
 from openai import OpenAI
 
 from src.chat import ChatMessage, ConversationItem, ToolInvocation
-from src.observability import record_timing
+from src.observability import DiagnosticOutcome, record_timing
 from src.tools import TOOL_NAME, TOOLS, get_current_datetime_iso
 
 DEFAULT_TIMEOUT_SECONDS = 10.0
@@ -23,9 +23,31 @@ DEFAULT_TIMEOUT_SECONDS = 10.0
 class AIServiceError(RuntimeError):
     """A declared, content-free failure when generating an assistant reply."""
 
+    diagnostic_outcome = DiagnosticOutcome.OPERATIONAL_FAILURE
+
 
 class InvalidConfigurationError(AIServiceError):
     """Required model-service configuration is absent or invalid."""
+
+    diagnostic_outcome = DiagnosticOutcome.INVALID_CONFIGURATION
+
+
+class ServiceUnavailableError(AIServiceError):
+    """The model service timed out or could not be reached."""
+
+    diagnostic_outcome = DiagnosticOutcome.TIMEOUT_OR_UNAVAILABLE
+
+
+class ProviderRejectedError(AIServiceError):
+    """The model service rejected the request."""
+
+    diagnostic_outcome = DiagnosticOutcome.PROVIDER_REJECTED
+
+
+class UnusableResponseError(AIServiceError):
+    """The model returned no usable final answer."""
+
+    diagnostic_outcome = DiagnosticOutcome.UNUSABLE_RESPONSE
 
 
 @dataclass(frozen=True)
@@ -90,11 +112,26 @@ def _attribute(item: object, name: str, default: Any = None) -> Any:
     return item.get(name, default) if isinstance(item, dict) else getattr(item, name, default)
 
 
+def _classify_provider_error(error: openai.OpenAIError) -> AIServiceError:
+    status_code = getattr(error, "status_code", None)
+    if isinstance(error, openai.APIConnectionError) or (isinstance(status_code, int) and status_code >= 500):
+        return ServiceUnavailableError()
+    return ProviderRejectedError()
+
+
 def _tool_calls(response: object) -> list[object]:
     output = _attribute(response, "output", ())
     if not isinstance(output, (list, tuple)):
-        raise AIServiceError()
+        raise UnusableResponseError()
     return [item for item in output if _attribute(item, "type") == "function_call"]
+
+
+def _record_failed_step(step: str, started_at: float, failure: AIServiceError, cause: BaseException) -> NoReturn:
+    try:
+        raise failure from cause
+    except AIServiceError as raised:
+        record_timing(step, started_at, outcome=raised.diagnostic_outcome, error=raised)
+        raise
 
 
 def _validated_tool_invocations(calls: Iterable[object]) -> tuple[ToolInvocation, ...]:
@@ -104,18 +141,19 @@ def _validated_tool_invocations(calls: Iterable[object]) -> tuple[ToolInvocation
         name = _attribute(call, "name")
         arguments = _attribute(call, "arguments", "{}")
         if not isinstance(call_id, str) or not call_id or name != TOOL_NAME or not isinstance(arguments, str):
-            raise AIServiceError()
+            raise UnusableResponseError()
         try:
             parsed_arguments = json.loads(arguments)
         except json.JSONDecodeError as error:
-            raise AIServiceError() from error
+            raise UnusableResponseError() from error
         if parsed_arguments != {}:
-            raise AIServiceError()
+            raise UnusableResponseError()
         started_at = monotonic()
         try:
             output = get_current_datetime_iso()
-        finally:
-            record_timing("date_time_tool", started_at)
+        except Exception as error:
+            _record_failed_step("date_time_tool", started_at, UnusableResponseError(), error)
+        record_timing("date_time_tool", started_at)
         invocations.append(ToolInvocation(call_id, name, arguments, output))
     return tuple(invocations)
 
@@ -123,16 +161,18 @@ def _validated_tool_invocations(calls: Iterable[object]) -> tuple[ToolInvocation
 def _output_text(response: object) -> str:
     output_text = _attribute(response, "output_text", "")
     if not isinstance(output_text, str) or not output_text.strip():
-        raise AIServiceError()
+        raise UnusableResponseError()
     return output_text
 
 
 def _create_response(model_client: Any, **request: Any) -> object:
     started_at = monotonic()
     try:
-        return model_client.responses.create(**request)
-    finally:
-        record_timing("model_request", started_at)
+        response = model_client.responses.create(**request)
+    except openai.OpenAIError as error:
+        _record_failed_step("model_request", started_at, _classify_provider_error(error), error)
+    record_timing("model_request", started_at)
+    return response
 
 
 def generate_reply(
@@ -179,7 +219,11 @@ def generate_reply(
             tools=TOOLS,
         )
         if _tool_calls(final_response):
-            raise AIServiceError()
+            raise UnusableResponseError()
         return ModelReply(_output_text(final_response), invocations)
-    except (openai.OpenAIError, AttributeError, TypeError, ValueError) as error:
-        raise AIServiceError() from error
+    except AIServiceError:
+        raise
+    except openai.OpenAIError as error:
+        raise _classify_provider_error(error) from error
+    except (AttributeError, TypeError, ValueError) as error:
+        raise UnusableResponseError() from error

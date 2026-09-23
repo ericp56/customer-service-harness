@@ -11,7 +11,7 @@ import gradio as gr
 import uvicorn
 from fastapi import FastAPI
 
-from src.ai_client import AIServiceError, InvalidConfigurationError, generate_reply, load_configuration
+from src.ai_client import AIServiceError, InvalidConfigurationError, UnusableResponseError, generate_reply, load_configuration
 from src.chat import (
     ActiveConversation,
     ChatMessage,
@@ -91,7 +91,7 @@ def _status(outcome: Outcome) -> tuple[StatusRole, str]:
         Outcome.SENT: ("status", "Message sent."),
         Outcome.BLANK: ("alert", "Enter at least one non-whitespace character before sending."),
         Outcome.TOO_LONG: ("alert", "Messages must contain no more than 4,096 Unicode code points."),
-        Outcome.FAILED: ("alert", "The message could not be sent. Retry is available."),
+        Outcome.FAILED: ("alert", "The answer could not be obtained. Try again."),
         Outcome.ALREADY_SENDING: ("status", "A message is already being sent."),
         Outcome.LIMIT_REACHED: (
             "alert",
@@ -136,21 +136,11 @@ def _finish_sending(state: ActiveConversation, started_at: float) -> CallbackRes
     assert state.pending_text is not None
     try:
         reply = generate_reply(state.pending_text, state.history)
-    except InvalidConfigurationError as error:
-        failed = fail_submission(state)
-        DIAGNOSTICS.record(
-            DiagnosticOutcome.INVALID_CONFIGURATION,
-            started_at=started_at,
-            error=error,
-        )
-        return _callback_result(failed.state, failed.outcome, state.pending_text)
+        if not reply.content.strip():
+            raise UnusableResponseError()
     except AIServiceError as error:
         failed = fail_submission(state)
-        DIAGNOSTICS.record(
-            DiagnosticOutcome.OPERATIONAL_FAILURE,
-            started_at=started_at,
-            error=error,
-        )
+        DIAGNOSTICS.record(error.diagnostic_outcome, started_at=started_at, error=error)
         return _callback_result(failed.state, failed.outcome, state.pending_text)
 
     completed = complete_submission(state, reply.content, reply.tool_invocations)
@@ -162,7 +152,7 @@ def _finish_sending(state: ActiveConversation, started_at: float) -> CallbackRes
 
 
 def send_message(content: str, state: ActiveConversation) -> CallbackResult:
-    """Run validation and one echo callback without exposing content to diagnostics."""
+    """Validate and submit one chat message without exposing content to diagnostics."""
     started_at = monotonic()
     started = begin_submission(state, content)
     if started.outcome is not Outcome.SENT:

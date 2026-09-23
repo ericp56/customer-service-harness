@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
+
 from src import app
 import pytest
 
-from src.ai_client import ModelReply
+from src.ai_client import ModelReply, ServiceUnavailableError
 from src.chat import MAX_COMPLETED_PAIRS, ActiveConversation, Outcome, new_conversation
 from src.observability import DiagnosticOutcome
 
@@ -69,7 +71,9 @@ def test_callback_failure_retains_input_and_prior_history(monkeypatch) -> None:
     assert failed.outcome is Outcome.FAILED
     assert len(failed.history) == 2
     assert failed.state.pending_text == "retain me"
-    assert "Retry" in failed.status_text
+    assert "could not be obtained" in failed.status_text
+    assert "Try again" in failed.status_text
+    assert failed.retry_visible
 
 
 def test_empty_callback_output_is_a_retryable_failure(monkeypatch) -> None:
@@ -166,3 +170,28 @@ def test_health_readiness_is_content_free() -> None:
         assert app.health_status() == {"status": "ready"}
     finally:
         monkeypatch.undo()
+
+
+def test_missing_configuration_is_not_ready(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+
+    assert app.health_status() == {"status": "not_ready"}
+
+
+def test_failure_status_and_diagnostic_do_not_expose_content(monkeypatch, capsys) -> None:
+    def fail(*_args):
+        raise ServiceUnavailableError()
+
+    monkeypatch.setattr(app, "generate_reply", fail)
+    failed = app.send_message("unique visitor secret", new_conversation())
+    captured = capsys.readouterr().out
+    payload = json.loads(captured)
+
+    assert failed.outcome is Outcome.FAILED
+    assert failed.retry_visible
+    assert "could not be obtained" in failed.status_text
+    assert "Try again" in failed.status_text
+    assert payload["message"] == "timeout_or_unavailable"
+    assert payload["level"] == "ERROR"
+    assert "unique visitor secret" not in captured
