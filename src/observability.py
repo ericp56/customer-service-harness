@@ -24,6 +24,14 @@ class DiagnosticOutcome(StrEnum):
     UNUSABLE_RESPONSE = "unusable_response"
     LIMIT_REACHED = "limit_reached"
     DUPLICATE_PREVENTED = "duplicate_prevented"
+    TASK_COMPLETED = "task_completed"
+    TASK_FAILED = "task_failed"
+    TASK_CANCELED = "task_canceled"
+    TASK_REJECTED = "task_rejected"
+    TASK_TIMEOUT = "task_timeout"
+    TASK_APPROVAL_REQUIRED = "task_approval_required"
+    TASK_CLARIFICATION_REQUIRED = "task_clarification_required"
+    TASK_UNSUPPORTED_CAPABILITY = "task_unsupported_capability"
 
 
 class HealthStatus(StrEnum):

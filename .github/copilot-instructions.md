@@ -14,3 +14,6 @@ architecture: user and provider data must not enter diagnostics, persistence,
 or browser storage; tests must use deterministic fake model boundaries; and
 the state, timeout, strict-tool, accessibility, and performance invariants in
 `AGENTS.md` must remain intact.
+For agent-task changes, also keep task/proposal state server-side and transient,
+disable SDK tracing and durable agent sessions, and ensure progress text is fixed
+application copy outside the chat transcript.

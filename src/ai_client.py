@@ -11,7 +11,9 @@ from typing import Any, Iterable
 from urllib.parse import urlparse
 
 import openai
-from openai import OpenAI
+from agents import ModelSettings, RunConfig
+from agents.models.openai_responses import OpenAIResponsesModel
+from openai import AsyncOpenAI, OpenAI
 
 from src.chat import ChatMessage, ConversationItem, ToolInvocation
 from src.observability import record_timing
@@ -40,6 +42,34 @@ class AIServiceConfiguration:
 class ModelReply:
     content: str
     tool_invocations: tuple[ToolInvocation, ...] = ()
+
+
+def create_async_client(configuration: AIServiceConfiguration) -> AsyncOpenAI:
+    """Create the bounded async model client without automatic retries."""
+    return AsyncOpenAI(
+        api_key=configuration.api_key,
+        base_url=configuration.base_url,
+        timeout=configuration.timeout_seconds,
+        max_retries=0,
+    )
+
+
+def build_agent_model(configuration: AIServiceConfiguration, *, client: AsyncOpenAI) -> OpenAIResponsesModel:
+    """Build one agent's model session using its own configured async client."""
+    return OpenAIResponsesModel(model=configuration.model, openai_client=client)
+
+
+def build_agent_run_config(configuration: AIServiceConfiguration) -> RunConfig:
+    """Build a stateless, untraced SDK run with bounded sequential tool calls."""
+    return RunConfig(
+        model_settings=ModelSettings(
+            timeout=configuration.timeout_seconds,
+            store=False,
+            parallel_tool_calls=False,
+        ),
+        tracing_disabled=True,
+        trace_include_sensitive_data=False,
+    )
 
 
 def load_configuration(environ: dict[str, str] | None = None) -> AIServiceConfiguration:

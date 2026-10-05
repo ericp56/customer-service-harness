@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import asyncio
+from dataclasses import dataclass, replace
 from html import escape
 from time import monotonic
-from typing import Literal
+from typing import AsyncIterator, Literal
 
 import gradio as gr
 import uvicorn
@@ -24,6 +25,16 @@ from src.chat import (
     new_conversation,
 )
 from src.observability import DiagnosticOutcome, Diagnostics, HealthStatus
+from src.task_runtime import TaskOutcome, TaskStatus
+from src.task_runtime import (
+    TaskState,
+    accrue_active_time,
+    begin_task,
+    cancel_task,
+    resolve_simulated_approval,
+    resume_task,
+    run_customer_task,
+)
 
 DIAGNOSTICS = Diagnostics()
 StatusRole = Literal["status", "alert"]
@@ -72,7 +83,7 @@ def health_status() -> dict[str, str]:
     """Expose only content-free readiness information."""
     try:
         load_configuration()
-    except InvalidConfigurationError as error:
+    except InvalidConfigurationError:
         return {"status": HealthStatus.NOT_READY.value}
     return {"status": DIAGNOSTICS.health().value}
 
@@ -101,6 +112,164 @@ def _status(outcome: Outcome) -> tuple[StatusRole, str]:
         Outcome.IDLE: ("status", "Ready to send a message."),
     }
     return messages[outcome]
+
+
+def task_status(status: TaskStatus) -> tuple[StatusRole, str]:
+    messages: dict[TaskStatus, tuple[StatusRole, str]] = {
+        TaskStatus.ACTIVE: ("status", "I'm working on that now."),
+        TaskStatus.WAITING_FOR_CLARIFICATION: ("status", "I need one detail to continue."),
+        TaskStatus.WAITING_FOR_APPROVAL: ("alert", "Please review the proposed action to continue."),
+        TaskStatus.COMPLETED: ("status", "Task completed."),
+        TaskStatus.FAILED: ("alert", "The task couldn't be completed. You can try again."),
+        TaskStatus.CANCELED: ("status", "Task canceled."),
+        TaskStatus.REJECTED: ("status", "I didn't proceed with the proposed action."),
+        TaskStatus.TIMED_OUT: ("alert", "This task took too long to finish. Please try again."),
+    }
+    return messages[status]
+
+
+def progress_status(update_number: int) -> tuple[StatusRole, str]:
+    messages = (
+        "I'm still working on that.",
+        "I'm continuing to work on that.",
+    )
+    return "status", messages[(max(1, update_number) - 1) % len(messages)]
+
+
+def task_diagnostic_outcome(outcome: TaskOutcome) -> DiagnosticOutcome | None:
+    mapping = {
+        TaskOutcome.COMPLETED: DiagnosticOutcome.TASK_COMPLETED,
+        TaskOutcome.FAILED: DiagnosticOutcome.TASK_FAILED,
+        TaskOutcome.CANCELED: DiagnosticOutcome.TASK_CANCELED,
+        TaskOutcome.REJECTED: DiagnosticOutcome.TASK_REJECTED,
+        TaskOutcome.TIMED_OUT: DiagnosticOutcome.TASK_TIMEOUT,
+        TaskOutcome.DUPLICATE_CALL: DiagnosticOutcome.TASK_UNSUPPORTED_CAPABILITY,
+        TaskOutcome.DUPLICATE_STEP: DiagnosticOutcome.TASK_UNSUPPORTED_CAPABILITY,
+        TaskOutcome.CAPABILITY_LIMIT: DiagnosticOutcome.TASK_UNSUPPORTED_CAPABILITY,
+        TaskOutcome.TURN_LIMIT: DiagnosticOutcome.TASK_FAILED,
+    }
+    return mapping.get(outcome)
+
+
+def _task_event_outputs(
+    state: ActiveConversation,
+    task_state: TaskState | None,
+    input_value: str,
+    status_role: StatusRole,
+    status_text: str,
+    *,
+    retry_visible: bool = False,
+) -> tuple[object, ...]:
+    active = task_state is not None and task_state.status is TaskStatus.ACTIVE
+    waiting_for_clarification = task_state is not None and task_state.status is TaskStatus.WAITING_FOR_CLARIFICATION
+    waiting_for_approval = task_state is not None and task_state.status is TaskStatus.WAITING_FOR_APPROVAL
+    display_history = [
+        {"role": item["role"], "content": escape(item["content"], quote=False)}
+        for item in render_history(state)
+    ]
+    return (
+        display_history,
+        input_value,
+        state,
+        task_state,
+        gr.HTML(value=_status_markup(status_role, status_text)),
+        gr.Button(interactive=not active and not waiting_for_approval),
+        gr.Button(visible=retry_visible, interactive=retry_visible),
+        gr.Button(visible=state.submission_state is SubmissionState.LIMIT_REACHED or waiting_for_clarification or waiting_for_approval),
+        gr.Button(visible=active or waiting_for_clarification or waiting_for_approval, interactive=active or waiting_for_clarification or waiting_for_approval),
+        gr.Button(visible=waiting_for_approval, interactive=waiting_for_approval),
+        gr.Button(visible=waiting_for_approval, interactive=waiting_for_approval),
+    )
+
+
+async def task_send_event(
+    content: str,
+    state: ActiveConversation,
+    current_task: TaskState | None,
+    *,
+    progress_interval_seconds: float = 5.0,
+    retry: bool = False,
+) -> AsyncIterator[tuple[object, ...]]:
+    """Submit a task while yielding separate, fixed customer-safe progress status."""
+    started_at = monotonic()
+    if current_task is not None and current_task.status is TaskStatus.WAITING_FOR_APPROVAL:
+        role, text = task_status(current_task.status)
+        yield _task_event_outputs(state, current_task, content, role, text)
+        return
+    if current_task is not None and current_task.status is TaskStatus.ACTIVE:
+        yield _task_event_outputs(state, current_task, content, "status", "A task is already being handled.")
+        return
+    if retry and current_task is not None and current_task.status is TaskStatus.TIMED_OUT:
+        role, text = task_status(current_task.status)
+        yield _task_event_outputs(state, current_task, content, role, text)
+        return
+
+    started = begin_retry(state) if retry else begin_submission(state, content)
+    if started.outcome is not Outcome.SENT:
+        diagnostic_outcome = _diagnostic_outcome(started.outcome)
+        if diagnostic_outcome is not None:
+            DIAGNOSTICS.record(diagnostic_outcome, started_at=started_at)
+        role, text = _status(started.outcome)
+        yield _task_event_outputs(started.state, None, content, role, text)
+        return
+
+    continuing_task = (
+        current_task
+        if current_task is not None
+        and current_task.status in (TaskStatus.WAITING_FOR_CLARIFICATION, TaskStatus.FAILED)
+        else None
+    )
+    if continuing_task is None:
+        task_state = begin_task(content, now=started_at)
+    else:
+        resumed = resume_task(continuing_task, now=started_at)
+        if resumed.outcome is not TaskOutcome.RESUMED:
+            failed = fail_submission(started.state)
+            role, text = task_status(resumed.state.status)
+            yield _task_event_outputs(failed.state, resumed.state, content, role, text, retry_visible=True)
+            return
+        task_state = resumed.state
+    task = asyncio.create_task(
+        run_customer_task(content, started.state.history, prior_task=continuing_task)
+    )
+    progress_count = 0
+    try:
+        role, text = task_status(TaskStatus.ACTIVE)
+        yield _task_event_outputs(started.state, task_state, content, role, text)
+        while not task.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=progress_interval_seconds)
+            except TimeoutError:
+                tick = accrue_active_time(task_state, now=monotonic())
+                task_state = tick.state
+                progress_count += 1
+                role, text = progress_status(progress_count)
+                yield _task_event_outputs(started.state, task_state, content, role, text)
+
+        result = task.result()
+        if result.response.status == "failed" or result.response.status == "unsupported":
+            failed = fail_submission(started.state)
+            DIAGNOSTICS.record(DiagnosticOutcome.TASK_FAILED, started_at=started_at)
+            role, text = task_status(result.task.status)
+            yield _task_event_outputs(failed.state, result.task, content, role, text, retry_visible=True)
+            return
+
+        completed = complete_submission(started.state, result.response.message)
+        mapped_outcome = task_diagnostic_outcome(result.outcome)
+        if mapped_outcome is not None:
+            DIAGNOSTICS.record(mapped_outcome, started_at=started_at)
+        role, text = task_status(result.task.status)
+        yield _task_event_outputs(completed.state, result.task, "", role, text)
+    except asyncio.CancelledError:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        cancel_task(task_state, now=monotonic())
+        DIAGNOSTICS.record(DiagnosticOutcome.TASK_CANCELED, started_at=started_at)
+        raise
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
 
 def _diagnostic_outcome(outcome: Outcome) -> DiagnosticOutcome | None:
@@ -222,6 +391,88 @@ def reset_event() -> tuple[object, ...]:
     return _to_gradio_outputs(start_new_conversation())
 
 
+async def retry_task_event(
+    current: ActiveConversation,
+    current_task: TaskState | None,
+) -> AsyncIterator[tuple[object, ...]]:
+    pending_text = current.pending_text or ""
+    async for output in task_send_event(pending_text, current, current_task, retry=True):
+        yield output
+
+
+def reset_task_event() -> tuple[object, ...]:
+    state = new_conversation()
+    return _task_event_outputs(state, None, "", "status", "Ready to send a message.")
+
+
+def cancel_task_event(
+    current: ActiveConversation,
+    current_task: TaskState | None,
+) -> tuple[object, ...]:
+    if current_task is None:
+        return _task_event_outputs(current, None, current.pending_text or "", "status", "There is no task to cancel.")
+    canceled = cancel_task(current_task, now=monotonic())
+    if current.submission_state is SubmissionState.SENDING:
+        next_state = fail_submission(current).state
+    else:
+        completed_text = (
+            "Task canceled. Some work completed before cancellation; no further steps were started."
+            if current_task.completed_step_ids
+            else "Task canceled. No task steps were completed."
+        )
+        next_state = replace(
+            current,
+            history=(*current.history, ChatMessage("assistant", completed_text)),
+            pending_text=None,
+            submission_state=SubmissionState.IDLE,
+        )
+    DIAGNOSTICS.record(DiagnosticOutcome.TASK_CANCELED, started_at=monotonic())
+    status_text = (
+        "Task canceled. Some work completed before cancellation; no further steps were started."
+        if current_task.completed_step_ids
+        else "Task canceled. No task steps were completed."
+    )
+    return _task_event_outputs(next_state, canceled.state, current.pending_text or "", "status", status_text)
+
+
+def _resolve_task_approval(
+    current: ActiveConversation,
+    current_task: TaskState | None,
+    *,
+    approved: bool,
+) -> tuple[object, ...]:
+    if current_task is None:
+        return _task_event_outputs(current, None, "", "alert", "There is no pending action to review.")
+    resolved = resolve_simulated_approval(current_task, approved=approved)
+    if resolved.outcome is TaskOutcome.INVALID_TRANSITION:
+        return _task_event_outputs(current, current_task, "", "alert", "This action is no longer awaiting a decision.")
+
+    response_text = (
+        "The simulated action was approved and completed."
+        if approved
+        else "I didn't proceed with the proposed action."
+    )
+    next_state = replace(
+        current,
+        history=(*current.history, ChatMessage("assistant", response_text)),
+        pending_text=None,
+        submission_state=SubmissionState.IDLE,
+    )
+    diagnostic_outcome = task_diagnostic_outcome(resolved.outcome)
+    if diagnostic_outcome is not None:
+        DIAGNOSTICS.record(diagnostic_outcome, started_at=monotonic())
+    status_role, status_text = task_status(resolved.state.status)
+    return _task_event_outputs(next_state, resolved.state, "", status_role, status_text)
+
+
+def approve_task_event(current: ActiveConversation, current_task: TaskState | None) -> tuple[object, ...]:
+    return _resolve_task_approval(current, current_task, approved=True)
+
+
+def reject_task_event(current: ActiveConversation, current_task: TaskState | None) -> tuple[object, ...]:
+    return _resolve_task_approval(current, current_task, approved=False)
+
+
 def build_app() -> gr.Blocks:
     """Build a text-only Blocks page with a finite, 50-way event queue."""
     with gr.Blocks(analytics_enabled=False, title="Echo Web Chat") as demo:
@@ -240,6 +491,7 @@ def build_app() -> gr.Blocks:
             elem_id="echo-conversation",
         )
         state = gr.State(value=initial_state())
+        task_state = gr.State(value=None)
         message = gr.Textbox(
             label="Message",
             lines=3,
@@ -259,11 +511,14 @@ def build_app() -> gr.Blocks:
                 visible=False,
                 elem_id="echo-new-conversation",
             )
+            cancel = gr.Button("Cancel Task", visible=False, elem_id="echo-cancel-task")
+            approve = gr.Button("Approve Action", visible=False, elem_id="echo-approve-task")
+            reject = gr.Button("Reject Action", visible=False, elem_id="echo-reject-task")
 
-        outputs = [conversation, message, state, status, send, retry, reset]
-        send.click(
-            send_event,
-            inputs=[message, state],
+        outputs = [conversation, message, state, task_state, status, send, retry, reset, cancel, approve, reject]
+        send_task = send.click(
+            task_send_event,
+            inputs=[message, state, task_state],
             outputs=outputs,
             concurrency_limit=50,
             concurrency_id="echo-submission",
@@ -271,9 +526,9 @@ def build_app() -> gr.Blocks:
             api_name="submit",
             api_visibility="undocumented",
         )
-        message.submit(
-            send_event,
-            inputs=[message, state],
+        submit_task = message.submit(
+            task_send_event,
+            inputs=[message, state, task_state],
             outputs=outputs,
             concurrency_limit=50,
             concurrency_id="echo-submission",
@@ -282,8 +537,8 @@ def build_app() -> gr.Blocks:
             api_visibility="undocumented",
         )
         retry.click(
-            retry_event,
-            inputs=[state],
+            retry_task_event,
+            inputs=[state, task_state],
             outputs=outputs,
             concurrency_limit=50,
             concurrency_id="echo-submission",
@@ -292,10 +547,35 @@ def build_app() -> gr.Blocks:
             api_visibility="undocumented",
         )
         reset.click(
-            reset_event,
+            reset_task_event,
             outputs=outputs,
             queue=False,
             api_name="new-conversation",
+            api_visibility="undocumented",
+        )
+        cancel.click(
+            cancel_task_event,
+            inputs=[state, task_state],
+            outputs=outputs,
+            queue=False,
+            cancels=[send_task, submit_task],
+            api_name="cancel-task",
+            api_visibility="undocumented",
+        )
+        approve.click(
+            approve_task_event,
+            inputs=[state, task_state],
+            outputs=outputs,
+            queue=False,
+            api_name="approve-task",
+            api_visibility="undocumented",
+        )
+        reject.click(
+            reject_task_event,
+            inputs=[state, task_state],
+            outputs=outputs,
+            queue=False,
+            api_name="reject-task",
             api_visibility="undocumented",
         )
     return demo.queue(default_concurrency_limit=50, max_size=100, api_open=False)

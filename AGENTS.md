@@ -30,25 +30,34 @@ browser persistence, transcript storage, uploads, analytics, or application
 log store.
 
 - `src/app.py` owns Gradio UI/event wiring, FastAPI health/readiness endpoints,
-  accessible fixed status messages, and the boundary from callbacks to state
-  and the AI adapter.
+  accessible fixed status/progress/approval messages, and the boundary from
+  callbacks to transient task state and the task runtime.
 - `src/chat.py` is the pure immutable state machine. It validates messages,
   enforces 4,096 Unicode code points and 50 completed user/assistant pairs,
   preserves failed input for retry, and stores tool records separately from
   displayable chat messages.
-- `src/ai_client.py` owns validated environment configuration, the OpenAI
-  Responses API boundary, complete active-session context serialization, and
-  the bounded tool loop. Keep SDK/provider mechanics out of UI callbacks.
-- `src/tools.py` defines the only permitted model tool:
-  `getCurrentDateTimeIso`. Tool calls must be strict, argument-free, and
-  server-owned.
+- `src/ai_client.py` owns validated environment configuration and bounded async
+  OpenAI-compatible clients. Each agent role receives a distinct client/model
+  object. Model attempts have a maximum 10-second timeout, no automatic retries,
+  no server-side storage, and no agent tracing.
+- `src/task_agents.py` defines the distinct conversation manager and task
+  specialist, their fixed prompts, and strict structured results. The manager
+  evaluates results and chooses completion, clarification, approval, or recovery.
+- `src/task_runtime.py` owns pure task lifecycle transitions, active-time
+  accounting, turn/capability limits, cancellation, clarification resume, and
+  one-shot simulated approval decisions.
+- `src/tools.py` defines `getCurrentDateTimeIso` and deterministic synthetic
+  read-only customer-service lookups. Schemas are strict and server-owned. The
+  simulated consequential action is an in-memory no-op, not an external side effect.
 - `src/observability.py` emits privacy-safe UTC JSON Lines to stdout and keeps
   bounded, in-process aggregate diagnostics only.
 
-The successful submission path is: Gradio callback -> `begin_submission` ->
-`generate_reply` -> `complete_submission` -> rendered display messages.
-Provider/configuration failures go through `fail_submission`, retain the
-pending input, and show the same fixed retry-safe status.
+The successful submission path is: Gradio async event -> `begin_submission` ->
+bounded task runtime -> `complete_submission` -> rendered display messages.
+Progress is emitted in a separate accessible status component every five seconds
+while active, never in chat history. Clarification pauses the active-time budget
+and resumes on customer input. Provider/configuration failures go through
+`fail_submission`, retain the pending input, and show fixed retry-safe status.
 
 ## Privacy, Reliability, and Performance Invariants
 
@@ -62,9 +71,15 @@ pending input, and show the same fixed retry-safe status.
 - Diagnostics have fixed categories and allowlisted timing steps only:
   `model_request`, `date_time_tool`, and `chat_submission`. Preserve
   non-negative integer `duration_ms` values.
-- Keep model calls bounded: 10-second timeout, no automatic SDK retries, and
-  at most one tool round trip. Unknown, malformed, non-empty-argument, or
-  repeated tool calls are safe declared failures.
+- Keep each model attempt bounded to 10 seconds with no automatic SDK retries.
+  Bound active task work to 60 seconds and no more than eight manager turns.
+  Permit one strict capability call per model turn and disable parallel tool
+  calls. Unknown, malformed, duplicate-call-ID, replayed-step, or unapproved
+  capability calls are safe declared failures.
+- Keep task/proposal state only in server-side transient Gradio state. Disable
+  Agents SDK tracing, SDK sessions, provider-managed conversations, and
+  serialized run-state transport. Progress is fixed application copy and stops
+  while waiting for customer input or at a terminal task state.
 - Preserve the Gradio privacy configuration: no analytics, sharing, feedback,
   uploads, rich content, or undocumented public API exposure. Render user and
   model text as text rather than trusted HTML.
@@ -78,8 +93,9 @@ pending input, and show the same fixed retry-safe status.
   annotations, frozen dataclasses for immutable domain values, and `StrEnum`
   for finite states/outcomes.
 - Keep domain transitions pure and independently testable. Inject or
-  monkeypatch the AI boundary in tests; normal automated tests must use
-  deterministic fakes and must not call an external model provider.
+  monkeypatch the AI/agent boundary in tests; normal automated tests must use
+  deterministic `ScriptedModel` and fake tool boundaries and must not call an
+  external model provider.
 - Put pure logic tests in `tests/unit/`, callback/boundary tests in
   `tests/integration/`, and browser journeys in `tests/e2e/`. Mark browser
   tests with `pytest.mark.e2e`.

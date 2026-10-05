@@ -3,34 +3,35 @@ import { check, fail } from "k6";
 import { Rate, Trend } from "k6/metrics";
 
 const target = (__ENV.TARGET_URL || "http://127.0.0.1:7860").replace(/\/$/, "");
-const duration = __ENV.LOAD_DURATION || "5m";
-const replyVisible = new Trend("reply_visible_ms");
+const taskVisible = new Trend("task_visible_ms");
 const generatedReply = new Rate("generated_reply");
 const queueSaturation = new Rate("queue_saturation");
+const progressObserved = new Rate("progress_observed");
 
 export const options = {
   scenarios: {
     chat_release_candidate: {
-      executor: "constant-vus",
+      executor: "shared-iterations",
       vus: 50,
-      duration,
+      iterations: 100,
+      maxDuration: "5m",
     },
   },
   thresholds: {
-    reply_visible_ms: ["p(95)<10000"],
+    task_visible_ms: ["p(95)<60000", "max<60000"],
     generated_reply: ["rate==1"],
     queue_saturation: ["rate==0"],
   },
 };
 
 function readCompleteEvent(response) {
-  const dataLine = response.body
+  const dataLines = response.body
     .split("\n")
-    .find((line) => line.startsWith("data: "));
-  if (!dataLine || !response.body.includes("event: complete")) {
+    .filter((line) => line.startsWith("data: "));
+  if (dataLines.length === 0 || !response.body.includes("event: complete")) {
     return null;
   }
-  return JSON.parse(dataLine.slice("data: ".length));
+  return JSON.parse(dataLines[dataLines.length - 1].slice("data: ".length));
 }
 
 export default function () {
@@ -38,7 +39,7 @@ export default function () {
   const startedAt = Date.now();
   const submit = http.post(
     `${target}/gradio_api/call/submit`,
-    JSON.stringify({ data: [message, null] }),
+    JSON.stringify({ data: [message, null, null] }),
     { headers: { "Content-Type": "application/json" } },
   );
 
@@ -62,8 +63,9 @@ export default function () {
     messages[1].content[0].text;
   const isGenerated = messages && messages[0].content[0].text === message && responseText && responseText !== message;
 
-  replyVisible.add(Date.now() - startedAt);
+  taskVisible.add(Date.now() - startedAt);
   generatedReply.add(Boolean(isGenerated));
+  progressObserved.add(Boolean(completed.body.includes("I'm still working on that.") || completed.body.includes("I'm continuing to work on that.")));
   queueSaturation.add(completed.status === 429 || completed.status === 503);
   check(completed, {
     "chat event completed": (response) => response.status === 200 && Boolean(payload),

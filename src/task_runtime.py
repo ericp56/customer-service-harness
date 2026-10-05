@@ -1,0 +1,513 @@
+"""Pure lifecycle transitions for bounded, transient customer tasks."""
+
+from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass, replace
+from enum import StrEnum
+from time import monotonic
+from typing import Any
+
+from agents import ModelTimeoutError, RunConfig, Runner
+
+from src.ai_client import (
+    AIServiceConfiguration,
+    build_agent_model,
+    build_agent_run_config,
+    create_async_client,
+    load_configuration,
+)
+from src.chat import ChatMessage, ConversationItem
+from src.task_agents import ConversationResponse, TaskAgents, create_task_agents
+from src.tools import TASK_TOOLS, TaskToolLedger
+
+MAX_ACTIVE_SECONDS = 60.0
+MAX_MANAGER_TURNS = 8
+MAX_CAPABILITY_CALLS_PER_TURN = 1
+
+
+class TaskStatus(StrEnum):
+    ACTIVE = "active"
+    WAITING_FOR_CLARIFICATION = "waiting_for_clarification"
+    WAITING_FOR_APPROVAL = "waiting_for_approval"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELED = "canceled"
+    REJECTED = "rejected"
+    TIMED_OUT = "timed_out"
+
+
+class TaskOutcome(StrEnum):
+    STARTED = "started"
+    ACTIVE = "active"
+    PAUSED = "paused"
+    RESUMED = "resumed"
+    TURN_STARTED = "turn_started"
+    TURN_LIMIT = "turn_limit"
+    CAPABILITY_ACCEPTED = "capability_accepted"
+    CAPABILITY_LIMIT = "capability_limit"
+    DUPLICATE_CALL = "duplicate_call"
+    DUPLICATE_STEP = "duplicate_step"
+    STEP_COMPLETED = "step_completed"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELED = "canceled"
+    REJECTED = "rejected"
+    TIMED_OUT = "timed_out"
+    INVALID_TRANSITION = "invalid_transition"
+
+
+@dataclass(frozen=True)
+class TaskState:
+    request: str
+    status: TaskStatus
+    active_seconds: float
+    last_active_at: float | None
+    turn_count: int = 0
+    capability_calls_this_turn: int = 0
+    capability_call_ids: tuple[str, ...] = ()
+    capability_step_ids: tuple[str, ...] = ()
+    completed_step_ids: tuple[str, ...] = ()
+    completed_step_results: tuple[str, ...] = ()
+    pending_proposal: str | None = None
+    continuation_context: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class TaskTransition:
+    state: TaskState
+    outcome: TaskOutcome
+
+
+@dataclass(frozen=True)
+class TaskRunResult:
+    task: TaskState
+    response: ConversationResponse
+    outcome: TaskOutcome
+
+
+def begin_task(request: str, *, now: float) -> TaskState:
+    return TaskState(
+        request=request,
+        status=TaskStatus.ACTIVE,
+        active_seconds=0.0,
+        last_active_at=now,
+    )
+
+
+def remaining_active_seconds(state: TaskState) -> float:
+    return max(0.0, MAX_ACTIVE_SECONDS - state.active_seconds)
+
+
+def accrue_active_time(state: TaskState, *, now: float) -> TaskTransition:
+    if state.status is not TaskStatus.ACTIVE or state.last_active_at is None:
+        return TaskTransition(state, TaskOutcome.INVALID_TRANSITION)
+
+    current_time = max(now, state.last_active_at)
+    elapsed = current_time - state.last_active_at
+    active_seconds = min(MAX_ACTIVE_SECONDS, state.active_seconds + elapsed)
+    if active_seconds >= MAX_ACTIVE_SECONDS:
+        timed_out = replace(
+            state,
+            status=TaskStatus.TIMED_OUT,
+            active_seconds=MAX_ACTIVE_SECONDS,
+            last_active_at=None,
+        )
+        return TaskTransition(timed_out, TaskOutcome.TIMED_OUT)
+
+    active = replace(state, active_seconds=active_seconds, last_active_at=current_time)
+    return TaskTransition(active, TaskOutcome.ACTIVE)
+
+
+def pause_task(state: TaskState, status: TaskStatus, *, now: float) -> TaskTransition:
+    if status not in (TaskStatus.WAITING_FOR_CLARIFICATION, TaskStatus.WAITING_FOR_APPROVAL):
+        return TaskTransition(state, TaskOutcome.INVALID_TRANSITION)
+    elapsed = accrue_active_time(state, now=now)
+    if elapsed.outcome is TaskOutcome.TIMED_OUT:
+        return elapsed
+    if elapsed.outcome is not TaskOutcome.ACTIVE:
+        return elapsed
+
+    paused = replace(elapsed.state, status=status, last_active_at=None)
+    return TaskTransition(paused, TaskOutcome.PAUSED)
+
+
+def resume_task(state: TaskState, *, now: float) -> TaskTransition:
+    if state.status not in (
+        TaskStatus.WAITING_FOR_CLARIFICATION,
+        TaskStatus.WAITING_FOR_APPROVAL,
+        TaskStatus.FAILED,
+    ):
+        return TaskTransition(state, TaskOutcome.INVALID_TRANSITION)
+    if state.active_seconds >= MAX_ACTIVE_SECONDS:
+        timed_out = replace(state, status=TaskStatus.TIMED_OUT, last_active_at=None)
+        return TaskTransition(timed_out, TaskOutcome.TIMED_OUT)
+
+    active = replace(state, status=TaskStatus.ACTIVE, last_active_at=now)
+    return TaskTransition(active, TaskOutcome.RESUMED)
+
+
+def begin_agent_turn(state: TaskState) -> TaskTransition:
+    if state.status is not TaskStatus.ACTIVE:
+        return TaskTransition(state, TaskOutcome.INVALID_TRANSITION)
+    if state.turn_count >= MAX_MANAGER_TURNS:
+        failed = replace(state, status=TaskStatus.FAILED, last_active_at=None)
+        return TaskTransition(failed, TaskOutcome.TURN_LIMIT)
+
+    next_turn = replace(
+        state,
+        turn_count=state.turn_count + 1,
+        capability_calls_this_turn=0,
+    )
+    return TaskTransition(next_turn, TaskOutcome.TURN_STARTED)
+
+
+def record_capability_invocation(
+    state: TaskState,
+    call_id: str,
+    step_id: str,
+) -> TaskTransition:
+    if state.status is not TaskStatus.ACTIVE or state.turn_count == 0:
+        return TaskTransition(state, TaskOutcome.INVALID_TRANSITION)
+    if state.capability_calls_this_turn >= MAX_CAPABILITY_CALLS_PER_TURN:
+        return TaskTransition(state, TaskOutcome.CAPABILITY_LIMIT)
+    if not call_id or call_id in state.capability_call_ids:
+        return TaskTransition(state, TaskOutcome.DUPLICATE_CALL)
+    if not step_id or step_id in state.capability_step_ids:
+        return TaskTransition(state, TaskOutcome.DUPLICATE_STEP)
+
+    accepted = replace(
+        state,
+        capability_calls_this_turn=state.capability_calls_this_turn + 1,
+        capability_call_ids=(*state.capability_call_ids, call_id),
+        capability_step_ids=(*state.capability_step_ids, step_id),
+    )
+    return TaskTransition(accepted, TaskOutcome.CAPABILITY_ACCEPTED)
+
+
+def complete_task_step(state: TaskState, step_id: str, result: str = "") -> TaskTransition:
+    if state.status is not TaskStatus.ACTIVE or step_id not in state.capability_step_ids:
+        return TaskTransition(state, TaskOutcome.INVALID_TRANSITION)
+    if step_id in state.completed_step_ids:
+        return TaskTransition(state, TaskOutcome.DUPLICATE_STEP)
+
+    completed = replace(
+        state,
+        completed_step_ids=(*state.completed_step_ids, step_id),
+        completed_step_results=(*state.completed_step_results, result),
+    )
+    return TaskTransition(completed, TaskOutcome.STEP_COMPLETED)
+
+
+def request_simulated_approval(state: TaskState, proposal: str, *, now: float) -> TaskTransition:
+    if not proposal.strip():
+        return TaskTransition(state, TaskOutcome.INVALID_TRANSITION)
+    paused = pause_task(state, TaskStatus.WAITING_FOR_APPROVAL, now=now)
+    if paused.outcome is not TaskOutcome.PAUSED:
+        return paused
+    return TaskTransition(replace(paused.state, pending_proposal=proposal), TaskOutcome.PAUSED)
+
+
+def resolve_simulated_approval(state: TaskState, *, approved: bool) -> TaskTransition:
+    if state.status is not TaskStatus.WAITING_FOR_APPROVAL or not state.pending_proposal:
+        return TaskTransition(state, TaskOutcome.INVALID_TRANSITION)
+    if not approved:
+        rejected = replace(state, status=TaskStatus.REJECTED, pending_proposal=None, last_active_at=None)
+        return TaskTransition(rejected, TaskOutcome.REJECTED)
+
+    completed = replace(
+        state,
+        status=TaskStatus.COMPLETED,
+        completed_step_ids=(*state.completed_step_ids, "simulated-consequential-action"),
+        pending_proposal=None,
+        last_active_at=None,
+    )
+    return TaskTransition(completed, TaskOutcome.COMPLETED)
+
+
+def complete_task(state: TaskState) -> TaskTransition:
+    if state.status is not TaskStatus.ACTIVE:
+        return TaskTransition(state, TaskOutcome.INVALID_TRANSITION)
+    return TaskTransition(
+        replace(state, status=TaskStatus.COMPLETED, last_active_at=None),
+        TaskOutcome.COMPLETED,
+    )
+
+
+def fail_task(state: TaskState) -> TaskTransition:
+    if state.status not in (TaskStatus.ACTIVE, TaskStatus.WAITING_FOR_CLARIFICATION, TaskStatus.WAITING_FOR_APPROVAL):
+        return TaskTransition(state, TaskOutcome.INVALID_TRANSITION)
+    return TaskTransition(
+        replace(
+            state,
+            status=TaskStatus.FAILED,
+            last_active_at=None,
+            pending_proposal=None,
+            continuation_context=(),
+        ),
+        TaskOutcome.FAILED,
+    )
+
+
+def cancel_task(state: TaskState, *, now: float | None = None) -> TaskTransition:
+    if state.status not in (TaskStatus.ACTIVE, TaskStatus.WAITING_FOR_CLARIFICATION, TaskStatus.WAITING_FOR_APPROVAL):
+        return TaskTransition(state, TaskOutcome.INVALID_TRANSITION)
+
+    current = state
+    if state.status is TaskStatus.ACTIVE and now is not None:
+        elapsed = accrue_active_time(state, now=now)
+        if elapsed.outcome is TaskOutcome.TIMED_OUT:
+            return elapsed
+        current = elapsed.state
+
+    canceled = replace(
+        current,
+        status=TaskStatus.CANCELED,
+        last_active_at=None,
+        pending_proposal=None,
+        continuation_context=(),
+    )
+    return TaskTransition(canceled, TaskOutcome.CANCELED)
+
+
+def _conversation_input(
+    history: tuple[ConversationItem, ...],
+    pending_text: str,
+    prior_task: TaskState | None = None,
+) -> list[dict[str, str]]:
+    items = [
+        {"role": item.role, "content": item.content}
+        for item in history
+        if isinstance(item, ChatMessage)
+    ]
+    if prior_task is not None and prior_task.continuation_context:
+        items.append(
+            {
+                "role": "assistant",
+                "content": "Transient task findings for continuation: "
+                + "\n".join(prior_task.continuation_context),
+            }
+        )
+    if prior_task is not None and prior_task.completed_step_ids:
+        items.append(
+            {
+                "role": "assistant",
+                "content": "Completed task steps and findings; do not repeat them: "
+                + "\n".join(
+                    f"{step_id}: {result}"
+                    for step_id, result in zip(
+                        prior_task.completed_step_ids,
+                        prior_task.completed_step_results,
+                        strict=False,
+                    )
+                ),
+            }
+        )
+    items.append({"role": "user", "content": pending_text})
+    return items
+
+
+def _merge_tool_ledger(state: TaskState, ledger: TaskToolLedger) -> TaskState:
+    return replace(
+        state,
+        capability_call_ids=tuple(ledger.capability_call_ids),
+        capability_step_ids=tuple(ledger.capability_step_ids),
+        completed_step_ids=tuple(ledger.completed_step_ids),
+        completed_step_results=tuple(ledger.completed_step_results),
+    )
+
+
+def _is_timeout_error(error: BaseException) -> bool:
+    pending_errors = [error]
+    seen: set[int] = set()
+    while pending_errors:
+        current_error = pending_errors.pop()
+        if id(current_error) in seen:
+            continue
+        seen.add(id(current_error))
+        if isinstance(current_error, (TimeoutError, ModelTimeoutError)):
+            return True
+        if "timeout" in type(current_error).__name__.lower():
+            return True
+        if isinstance(current_error, BaseExceptionGroup):
+            pending_errors.extend(current_error.exceptions)
+        if current_error.__cause__ is not None:
+            pending_errors.append(current_error.__cause__)
+        if current_error.__context__ is not None:
+            pending_errors.append(current_error.__context__)
+    return False
+
+
+async def run_customer_task(
+    pending_text: str,
+    history: tuple[ConversationItem, ...],
+    *,
+    agents: TaskAgents | None = None,
+    configuration: AIServiceConfiguration | None = None,
+    client: Any | None = None,
+    prior_task: TaskState | None = None,
+) -> TaskRunResult:
+    """Run one bounded manager/specialist workflow without retaining provider errors."""
+    started_at = monotonic()
+    previous_manager_turns = prior_task.turn_count if prior_task is not None else 0
+    if prior_task is None:
+        task = begin_task(pending_text, now=started_at)
+    else:
+        resumed = resume_task(prior_task, now=started_at)
+        if resumed.outcome is not TaskOutcome.RESUMED:
+            response = ConversationResponse(status="failed", message="This task took too long to finish. Please try again.")
+            return TaskRunResult(resumed.state, response, resumed.outcome)
+        task = resumed.state
+    turn = begin_agent_turn(task)
+    if turn.outcome is not TaskOutcome.TURN_STARTED:
+        return TaskRunResult(
+            turn.state,
+            ConversationResponse(status="unsupported", message="I couldn't continue that task. Please try again."),
+            turn.outcome,
+        )
+
+    owned_clients: list[Any] = []
+    tool_ledger = TaskToolLedger(
+        capability_call_ids=list(turn.state.capability_call_ids),
+        capability_step_ids=list(turn.state.capability_step_ids),
+        completed_step_ids=list(turn.state.completed_step_ids),
+        completed_step_results=list(turn.state.completed_step_results),
+    )
+    remaining_seconds = remaining_active_seconds(turn.state)
+    if remaining_seconds <= 0:
+        timed_out = replace(turn.state, status=TaskStatus.TIMED_OUT, last_active_at=None)
+        return TaskRunResult(
+            timed_out,
+            ConversationResponse(status="failed", message="This task took too long to finish. Please try again."),
+            TaskOutcome.TIMED_OUT,
+        )
+    try:
+        if agents is None:
+            config = configuration or load_configuration()
+            if client is None:
+                conversation_client = create_async_client(config)
+                task_client = create_async_client(config)
+                owned_clients.extend((conversation_client, task_client))
+            else:
+                conversation_client = task_client = client
+            agents = create_task_agents(
+                conversation_model=build_agent_model(config, client=conversation_client),
+                task_model=build_agent_model(config, client=task_client),
+                task_tools=TASK_TOOLS,
+            )
+            run_configuration = build_agent_run_config(config)
+        else:
+            run_configuration = RunConfig(
+                tracing_disabled=True,
+                trace_include_sensitive_data=False,
+            )
+
+        result = await asyncio.wait_for(
+            Runner.run(
+                agents.conversation,
+                _conversation_input(history, pending_text, prior_task),
+                context=tool_ledger,
+                run_config=run_configuration,
+                max_turns=MAX_MANAGER_TURNS - previous_manager_turns,
+            ),
+            timeout=remaining_seconds,
+        )
+    except ModelTimeoutError:
+        elapsed = accrue_active_time(turn.state, now=monotonic())
+        if elapsed.outcome is TaskOutcome.TIMED_OUT:
+            timed_out = _merge_tool_ledger(elapsed.state, tool_ledger)
+            return TaskRunResult(
+                timed_out,
+                ConversationResponse(status="failed", message="This task took too long to finish. Please try again."),
+                TaskOutcome.TIMED_OUT,
+            )
+        failed = fail_task(_merge_tool_ledger(elapsed.state, tool_ledger))
+        return TaskRunResult(
+            failed.state,
+            ConversationResponse(status="failed", message="I couldn't complete that task. Please try again."),
+            TaskOutcome.FAILED,
+        )
+    except Exception as error:
+        if _is_timeout_error(error):
+            timed_out = replace(
+                _merge_tool_ledger(turn.state, tool_ledger),
+                status=TaskStatus.TIMED_OUT,
+                active_seconds=MAX_ACTIVE_SECONDS,
+                turn_count=MAX_MANAGER_TURNS,
+                last_active_at=None,
+            )
+            return TaskRunResult(
+                _merge_tool_ledger(timed_out.state, tool_ledger),
+                ConversationResponse(status="failed", message="This task took too long to finish. Please try again."),
+                TaskOutcome.TIMED_OUT,
+            )
+        elapsed = accrue_active_time(turn.state, now=monotonic())
+        if elapsed.outcome is TaskOutcome.TIMED_OUT:
+            timed_out = _merge_tool_ledger(elapsed.state, tool_ledger)
+            return TaskRunResult(
+                timed_out,
+                ConversationResponse(status="failed", message="This task took too long to finish. Please try again."),
+                TaskOutcome.TIMED_OUT,
+            )
+        failed = fail_task(_merge_tool_ledger(elapsed.state, tool_ledger))
+        return TaskRunResult(
+            failed.state,
+            ConversationResponse(status="failed", message="I couldn't complete that task. Please try again."),
+            TaskOutcome.FAILED,
+        )
+    finally:
+        for owned_client in owned_clients:
+            try:
+                await owned_client.close()
+            except Exception:
+                pass
+
+    elapsed = accrue_active_time(turn.state, now=monotonic())
+    if elapsed.outcome is TaskOutcome.TIMED_OUT:
+        return TaskRunResult(
+            _merge_tool_ledger(elapsed.state, tool_ledger),
+            ConversationResponse(status="failed", message="This task took too long to finish. Please try again."),
+            TaskOutcome.TIMED_OUT,
+        )
+
+    manager_turn_count = min(
+        MAX_MANAGER_TURNS,
+        previous_manager_turns + len(result.raw_responses),
+    )
+    response = result.final_output
+    elapsed_state = replace(
+        _merge_tool_ledger(elapsed.state, tool_ledger),
+        turn_count=manager_turn_count,
+    )
+    if not isinstance(response, ConversationResponse):
+        failed = fail_task(elapsed_state)
+        return TaskRunResult(
+            failed.state,
+            ConversationResponse(status="failed", message="I couldn't complete that task. Please try again."),
+            TaskOutcome.FAILED,
+        )
+
+    if response.status == "completed":
+        completed = complete_task(elapsed_state)
+        return TaskRunResult(completed.state, response, completed.outcome)
+    if response.status == "clarification_required":
+        paused = pause_task(elapsed_state, TaskStatus.WAITING_FOR_CLARIFICATION, now=monotonic())
+        continuation_context = paused.state.continuation_context
+        if response.task_result is not None:
+            continuation_context = (*continuation_context, response.task_result.model_dump_json())
+        paused_state = replace(paused.state, continuation_context=continuation_context)
+        return TaskRunResult(paused_state, response, paused.outcome)
+    if response.status == "approval_required":
+        proposal = response.task_result.proposal if response.task_result is not None else None
+        paused = request_simulated_approval(elapsed_state, proposal or "", now=monotonic())
+        if paused.outcome is not TaskOutcome.PAUSED:
+            failed = fail_task(paused.state)
+            return TaskRunResult(
+                failed.state,
+                ConversationResponse(status="failed", message="I couldn't complete that task. Please try again."),
+                TaskOutcome.FAILED,
+            )
+        return TaskRunResult(paused.state, response, paused.outcome)
+
+    failed = fail_task(elapsed_state)
+    return TaskRunResult(failed.state, response, TaskOutcome.FAILED)

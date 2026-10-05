@@ -6,6 +6,9 @@ import pytest
 from src.ai_client import (
     AIServiceConfiguration,
     AIServiceError,
+    build_agent_model,
+    build_agent_run_config,
+    create_async_client,
     generate_reply,
     load_configuration,
 )
@@ -67,3 +70,49 @@ def test_records_duration_for_each_model_request(capsys) -> None:
     records = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert records[-1]["step"] == "model_request"
     assert isinstance(records[-1]["duration_ms"], int)
+
+
+def test_async_client_uses_validated_settings_and_disables_retries(monkeypatch) -> None:
+    captured = {}
+
+    class FakeAsyncOpenAI:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr("src.ai_client.AsyncOpenAI", FakeAsyncOpenAI)
+    config = AIServiceConfiguration("secret", "model", "https://model.example/v1", 7.5)
+
+    client = create_async_client(config)
+
+    assert isinstance(client, FakeAsyncOpenAI)
+    assert captured == {
+        "api_key": "secret",
+        "base_url": "https://model.example/v1",
+        "timeout": 7.5,
+        "max_retries": 0,
+    }
+
+
+def test_agent_run_config_bounds_requests_and_disables_storage_and_tracing() -> None:
+    config = AIServiceConfiguration("secret", "configured-model", None, 8.0)
+    run_config = build_agent_run_config(config)
+
+    assert run_config.model_settings.timeout == 8.0
+    assert run_config.model_settings.store is False
+    assert run_config.model_settings.parallel_tool_calls is False
+    assert run_config.model_settings.retry is None
+    assert run_config.tracing_disabled is True
+    assert run_config.trace_include_sensitive_data is False
+
+
+def test_each_agent_can_own_a_distinct_configured_model_client() -> None:
+    config = AIServiceConfiguration("secret", "configured-model", None)
+    first_client = object()
+    second_client = object()
+
+    first_model = build_agent_model(config, client=first_client)
+    second_model = build_agent_model(config, client=second_client)
+
+    assert first_model is not second_model
+    assert first_model.model == config.model
+    assert second_model.model == config.model
