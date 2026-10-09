@@ -86,6 +86,7 @@ class Diagnostics:
         error: Exception | None = None,
         step: str = "chat_submission",
         account_number: str | None = None,
+        task_id: str | None = None,
     ) -> None:
         event = DiagnosticEvent(
             name="chat_submission",
@@ -107,6 +108,8 @@ class Diagnostics:
         # Account numbers are the only caller-supplied value permitted in diagnostics.
         if account_number is not None and re.fullmatch(r"[0-9]{1,12}", account_number):
             payload["account_number"] = account_number
+        if task_id is not None and _TASK_ID_PATTERN.fullmatch(task_id):
+            payload["task_id"] = task_id
         if error:
             stack = [f"{frame.filename}:{frame.lineno}" for frame in traceback.extract_tb(error.__traceback__)]
             if stack:
@@ -124,6 +127,69 @@ def _sanitize(message: str) -> str:
     message = re.sub(r"https?://\S+", "[redacted-url]", message)
     message = re.sub(r"\b(?:sk|key)-[A-Za-z0-9_-]+\b", "[redacted-secret]", message)
     return message
+
+
+_TASK_ID_PATTERN = re.compile(r"[0-9a-f]{32}")
+MODEL_CALL_AGENTS = frozenset({"conversation", "task"})
+MODEL_CALL_OUTCOMES = frozenset({"success", "timeout", "error", "canceled"})
+
+
+def record_model_call(
+    *,
+    task_id: str,
+    agent: str,
+    call_index: int,
+    outcome: str,
+    started_at: float,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    total_tokens: int = 0,
+    cached_input_tokens: int = 0,
+    reasoning_tokens: int = 0,
+    usage_reported: bool = False,
+    message_items: int = 0,
+    tool_calls: int = 0,
+    tool: str | None = None,
+) -> None:
+    """Emit one content-free line for a single model call from a fixed field allowlist."""
+    if (
+        not _TASK_ID_PATTERN.fullmatch(task_id)
+        or agent not in MODEL_CALL_AGENTS
+        or outcome not in MODEL_CALL_OUTCOMES
+        or call_index < 1
+    ):
+        raise ValueError("unsupported model call diagnostic")
+    payload: dict[str, object] = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "component": "model_call",
+        "level": "INFO" if outcome == "success" else "ERROR",
+        "message": outcome,
+        "step": "model_request",
+        "duration_ms": max(0, round((monotonic() - started_at) * 1000)),
+        "task_id": task_id,
+        "agent": agent,
+        "call_index": call_index,
+        "outcome": outcome,
+    }
+    if outcome == "success":
+        payload.update(
+            {
+                "usage_reported": bool(usage_reported),
+                "input_tokens": max(0, int(input_tokens)),
+                "output_tokens": max(0, int(output_tokens)),
+                "total_tokens": max(0, int(total_tokens)),
+                "cached_input_tokens": max(0, int(cached_input_tokens)),
+                "reasoning_tokens": max(0, int(reasoning_tokens)),
+                "message_items": max(0, int(message_items)),
+                "tool_calls": max(0, int(tool_calls)),
+            }
+        )
+        if tool is not None:
+            payload["tool"] = tool
+    try:
+        print(json.dumps(payload, separators=(",", ":"), ensure_ascii=True), file=sys.stdout, flush=True)
+    except (TypeError, ValueError):
+        print("diagnostic serialization failed", file=sys.stdout, flush=True)
 
 
 def record_timing(step: str, started_at: float) -> None:

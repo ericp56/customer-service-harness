@@ -9,6 +9,8 @@ from typing import Any, Literal, Sequence
 from agents import Agent, RunResult, set_tracing_disabled
 from pydantic import BaseModel, ConfigDict
 
+from src.model_diagnostics import ModelCallHooks
+
 MAX_TASK_SPECIALIST_TURNS = 4
 _PROMPT_DIRECTORY = Path(__file__).parent / "prompts"
 set_tracing_disabled(True)
@@ -70,6 +72,7 @@ def create_task_agents(
         tool_description="Complete one bounded task step using approved capabilities.",
         custom_output_extractor=_extract_task_result,
         max_turns=MAX_TASK_SPECIALIST_TURNS,
+        hooks=ModelCallHooks("task"),
     )
     conversation_agent = Agent(
         name="Customer conversation assistant",

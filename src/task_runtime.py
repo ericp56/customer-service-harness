@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from time import monotonic
 from typing import Any
+from uuid import uuid4
 
 from agents import ModelTimeoutError, RunConfig, Runner
 
@@ -19,6 +20,7 @@ from src.ai_client import (
     load_configuration,
 )
 from src.chat import ChatMessage, ConversationItem
+from src.model_diagnostics import ModelCallHooks, ModelCallRecorder
 from src.task_agents import ConversationResponse, TaskAgents, create_task_agents
 from src.tools import TASK_TOOLS, TaskToolLedger
 
@@ -79,6 +81,8 @@ class TaskState:
     pending_proposal: str | None = None
     continuation_context: tuple[str, ...] = ()
     caller: CallerSession = CallerSession()
+    # Random correlation value for diagnostics; never derived from content.
+    task_id: str = field(default_factory=lambda: uuid4().hex)
 
 
 @dataclass(frozen=True)
@@ -406,6 +410,8 @@ async def run_customer_task(
             ConversationResponse(status="failed", message="This task took too long to finish. Please try again."),
             TaskOutcome.TIMED_OUT,
         )
+    recorder = ModelCallRecorder(turn.state.task_id)
+    recording_token = recorder.activate()
     try:
         if agents is None:
             config = configuration or load_configuration()
@@ -434,10 +440,12 @@ async def run_customer_task(
                 context=tool_ledger,
                 run_config=run_configuration,
                 max_turns=MAX_MANAGER_TURNS,
+                hooks=ModelCallHooks("conversation"),
             ),
             timeout=remaining_seconds,
         )
     except ModelTimeoutError:
+        recorder.fail("timeout")
         elapsed = accrue_active_time(turn.state, now=monotonic())
         if elapsed.outcome is TaskOutcome.TIMED_OUT:
             timed_out = _merge_tool_ledger(elapsed.state, tool_ledger)
@@ -453,6 +461,7 @@ async def run_customer_task(
             TaskOutcome.FAILED,
         )
     except Exception as error:
+        recorder.fail("timeout" if _is_timeout_error(error) else "error")
         if _is_timeout_error(error):
             timed_out = replace(
                 _merge_tool_ledger(turn.state, tool_ledger),
@@ -481,6 +490,8 @@ async def run_customer_task(
             TaskOutcome.FAILED,
         )
     finally:
+        recorder.fail("canceled")
+        recorder.deactivate(recording_token)
         for owned_client in owned_clients:
             try:
                 await owned_client.close()

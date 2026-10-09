@@ -264,7 +264,11 @@ async def task_send_event(
         result = task.result()
         if result.response.status == "failed" or result.response.status == "unsupported":
             failed = fail_submission(started.state)
-            DIAGNOSTICS.record(DiagnosticOutcome.TASK_FAILED, started_at=started_at)
+            DIAGNOSTICS.record(
+                DiagnosticOutcome.TASK_FAILED,
+                started_at=started_at,
+                task_id=result.task.task_id,
+            )
             role, text = task_status(result.task.status)
             yield _task_event_outputs(failed.state, result.task, content, role, text, retry_visible=True)
             return
@@ -276,6 +280,7 @@ async def task_send_event(
                 mapped_outcome,
                 started_at=started_at,
                 account_number=result.task.caller.current_account,
+                task_id=result.task.task_id,
             )
         role, text = task_status(result.task.status)
         yield _task_event_outputs(completed.state, result.task, "", role, text)

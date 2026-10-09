@@ -20,3 +20,5 @@ application copy outside the chat transcript.
 For caller-service tasks, keep verification rules and attempt limits in
 `src/accounts.py`, never expose or log a zip code, and log only a validated
 account number.
+For model-call diagnostics, emit only the fixed content-free `model_call` fields
+and a random `task_id`; never log prompts, replies, tool I/O, or provider IDs.

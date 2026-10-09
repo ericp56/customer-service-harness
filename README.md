@@ -24,6 +24,9 @@ Operational diagnostics are emitted as privacy-safe UTC JSON Lines on stdout for
 collector. The application does not retain logs; records never include chat content, credentials,
 model-service URLs, prompts, tool outputs, approval proposals, or provider payloads.
 Only a validated account number may appear; zip codes and other PII never do.
+Each model call also emits one `model_call` line with the agent role, call sequence,
+`duration_ms`, token counts, outcome (`success`, `timeout`, `error`, `canceled`), and
+response shape, sharing a random `task_id` with the task's outcome line.
 Timing records use fixed step names (`model_request`, `date_time_tool`, and `chat_submission`) and
 non-negative `duration_ms` values to identify slow blocking work without exposing request data.
 Agents SDK tracing and durable agent sessions are disabled.

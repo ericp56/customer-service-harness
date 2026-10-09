@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from src import app
 from src.accounts import CallerSession
 from src.chat import new_conversation
@@ -128,6 +130,31 @@ def test_diagnostics_include_the_account_number_but_never_a_zip_code(monkeypatch
     assert '"account_number":"123"' in output
     assert "12345" not in output
     assert DiagnosticOutcome.TASK_COMPLETED.value in output
+
+
+def test_outcome_line_carries_the_task_id_for_correlation(monkeypatch, run_async, capsys) -> None:
+    task = TaskState("hello", TaskStatus.COMPLETED, 0.1, None)
+
+    async def fake_task(*_args, **_kwargs) -> TaskRunResult:
+        return TaskRunResult(
+            task,
+            ConversationResponse(status="completed", message="Hi."),
+            TaskOutcome.COMPLETED,
+        )
+
+    monkeypatch.setattr(app, "run_customer_task", fake_task)
+
+    async def collect() -> None:
+        _ = [output async for output in app.task_send_event("hello", new_conversation(), None)]
+
+    run_async(collect())
+    outcome = next(
+        json.loads(line)
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith("{") and json.loads(line).get("message") == "task_completed"
+    )
+
+    assert outcome["task_id"] == task.task_id
 
 
 def test_session_end_is_a_fixed_diagnostic_category() -> None:

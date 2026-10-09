@@ -57,6 +57,9 @@ log store.
   `src/prompts/task_catalog.md`; a "caller" is the user who starts the conversation.
 - `src/observability.py` emits privacy-safe UTC JSON Lines to stdout and keeps
   bounded, in-process aggregate diagnostics only.
+- `src/model_diagnostics.py` emits one content-free `model_call` line per model
+  call (role, sequence, `duration_ms`, token counts, outcome, response shape)
+  through SDK lifecycle hooks, tied to its task outcome by a random `task_id`.
 
 The successful submission path is: Gradio async event -> `begin_submission` ->
 bounded task runtime -> `complete_submission` -> rendered display messages.
@@ -76,7 +79,9 @@ and resumes on customer input. Provider/configuration failures go through
   fixtures that reach the service, or browser persistence. Zip codes, names,
   and addresses are PII and must never be logged. The one exception is a
   validated digits-only account number, which may appear in the optional
-  `account_number` diagnostic field.
+  `account_number` diagnostic field. A random, content-independent `task_id`
+  (32 hex characters) and the fixed `model_call` fields may also appear; model
+  names, provider response IDs, and error text must not.
 - Diagnostics have fixed categories and allowlisted timing steps only:
   `model_request`, `date_time_tool`, and `chat_submission`. Preserve
   non-negative integer `duration_ms` values.
