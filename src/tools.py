@@ -10,6 +10,15 @@ from typing import Any, Literal
 from agents import function_tool
 from agents.tool_context import ToolContext
 
+from src.accounts import (
+    CallerSession,
+    LookupResult,
+    ZipResult,
+    lookup_account,
+    support_contact,
+    verify_zip,
+)
+
 TOOL_NAME = "getCurrentDateTimeIso"
 TOOLS = [
     {
@@ -37,6 +46,7 @@ class TaskToolLedger:
     capability_step_ids: list[str] = field(default_factory=list)
     completed_step_ids: list[str] = field(default_factory=list)
     completed_step_results: list[str] = field(default_factory=list)
+    caller: CallerSession = field(default_factory=CallerSession)
 
     def claim(self, call_id: str, step_id: str) -> None:
         if not call_id or call_id in self.capability_call_ids:
@@ -94,4 +104,72 @@ def lookup_service_information_tool(
     return result
 
 
-TASK_TOOLS: tuple[Any, ...] = (current_datetime_tool, lookup_service_information_tool)
+_LOOKUP_RESULTS = {
+    LookupResult.FOUND: "Account found. Ask the caller for their zip code.",
+    LookupResult.NOT_FOUND: "No account found. Tell the caller and ask for the account number again.",
+    LookupResult.SESSION_ENDED: "The session has ended.",
+}
+_ZIP_RESULTS = {
+    ZipResult.MATCH: "The zip code matched and the account is verified.",
+    ZipResult.MISMATCH: "The zip code did not match. Ask the caller for the zip code again.",
+    ZipResult.NO_ACCOUNT: "No account is selected. Ask the caller for the account number first.",
+    ZipResult.SESSION_ENDED: "The session has ended.",
+}
+
+
+def _next_step_id(ctx: ToolContext[TaskToolLedger], prefix: str) -> str:
+    step_id = f"{prefix}-{len(ctx.context.capability_call_ids) + 1}"
+    ctx.context.claim(ctx.tool_call_id, step_id)
+    return step_id
+
+
+@function_tool(
+    name_override="account_lookup",
+    description_override="Check whether an account number exists. Never reveals account details.",
+    strict_mode=True,
+)
+def account_lookup_tool(ctx: ToolContext[TaskToolLedger], account_number: str) -> str:
+    step_id = _next_step_id(ctx, "account-lookup")
+    ctx.context.caller, outcome = lookup_account(ctx.context.caller, account_number)
+    result = _LOOKUP_RESULTS[outcome]
+    ctx.context.complete(step_id, result)
+    return result
+
+
+@function_tool(
+    name_override="verify_account_zip",
+    description_override="Check the caller's zip code against the account they gave. Never reveals the stored zip code.",
+    strict_mode=True,
+)
+def verify_account_zip_tool(ctx: ToolContext[TaskToolLedger], zip_code: str) -> str:
+    step_id = _next_step_id(ctx, "verify-zip")
+    ctx.context.caller, outcome = verify_zip(ctx.context.caller, zip_code)
+    result = _ZIP_RESULTS[outcome]
+    ctx.context.complete(step_id, result)
+    return result
+
+
+@function_tool(
+    name_override="getSupportContact",
+    description_override="Get the customer support contact for the verified account.",
+    strict_mode=True,
+)
+def support_contact_tool(ctx: ToolContext[TaskToolLedger]) -> str:
+    step_id = _next_step_id(ctx, "support-contact")
+    contact = support_contact(ctx.context.caller)
+    result = (
+        f"Customer support contact: {contact}"
+        if contact
+        else "The account is not verified. Retrieve the customer account first."
+    )
+    ctx.context.complete(step_id, result)
+    return result
+
+
+TASK_TOOLS: tuple[Any, ...] = (
+    current_datetime_tool,
+    lookup_service_information_tool,
+    account_lookup_tool,
+    verify_account_zip_tool,
+    support_contact_tool,
+)

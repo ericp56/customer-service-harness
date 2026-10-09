@@ -235,7 +235,7 @@ def test_clarification_resumes_existing_task(page, echo_url: str, monkeypatch) -
     page.goto(echo_url)
     calls = 0
 
-    async def task_with_clarification(text: str, _history: tuple, *, prior_task=None) -> TaskRunResult:
+    async def task_with_clarification(text: str, _history: tuple, *, prior_task=None, caller=None) -> TaskRunResult:
         nonlocal calls
         calls += 1
         if prior_task is None:

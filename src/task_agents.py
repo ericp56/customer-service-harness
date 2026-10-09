@@ -18,6 +18,10 @@ def _prompt(name: str) -> str:
     return (_PROMPT_DIRECTORY / name).read_text(encoding="utf-8").strip()
 
 
+def _instructions(name: str) -> str:
+    return f"{_prompt(name)}\n\nThe person you are helping is the caller.\n\n{_prompt('task_catalog.md')}"
+
+
 class TaskAgentResult(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -30,7 +34,7 @@ class TaskAgentResult(BaseModel):
 class ConversationResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    status: Literal["completed", "clarification_required", "approval_required", "unsupported", "failed"]
+    status: Literal["completed", "clarification_required", "approval_required", "unsupported", "failed", "session_ended"]
     message: str
     task_result: TaskAgentResult | None = None
 
@@ -56,7 +60,7 @@ def create_task_agents(
 ) -> TaskAgents:
     task_agent = Agent(
         name="Customer task specialist",
-        instructions=_prompt("task_executor.txt"),
+        instructions=_instructions("task_executor.txt"),
         tools=list(task_tools),
         model=task_model,
         output_type=TaskAgentResult,
@@ -69,7 +73,7 @@ def create_task_agents(
     )
     conversation_agent = Agent(
         name="Customer conversation assistant",
-        instructions=_prompt("task_conversation.txt"),
+        instructions=_instructions("task_conversation.txt"),
         tools=[task_tool],
         model=conversation_model,
         output_type=ConversationResponse,

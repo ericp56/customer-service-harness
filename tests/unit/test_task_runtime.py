@@ -277,11 +277,11 @@ def test_runtime_resumes_clarification_with_original_active_time_budget(run_asyn
 
     assert result.task.request == "Find support hours"
     assert result.task.active_seconds >= 3.0
-    assert result.task.turn_count == 3
+    assert result.task.turn_count == 1
     assert result.task.status is TaskStatus.COMPLETED
 
 
-def test_manager_turn_budget_is_aggregate_across_resumes(monkeypatch, run_async) -> None:
+def test_manager_turn_budget_applies_to_each_caller_message(monkeypatch, run_async) -> None:
     captured = {}
 
     async def final_one_turn(*_args, **kwargs):
@@ -309,9 +309,27 @@ def test_manager_turn_budget_is_aggregate_across_resumes(monkeypatch, run_async)
         run_customer_task("answer", (), agents=agents, prior_task=prior_task)
     )
 
-    assert captured["max_turns"] == 1
-    assert result.task.turn_count == 8
+    assert captured["max_turns"] == 8
+    assert result.task.turn_count == 1
     assert result.outcome is TaskOutcome.COMPLETED
+
+
+def test_run_timeout_returns_fixed_timed_out_result_without_raising(monkeypatch, run_async) -> None:
+    async def hang_then_time_out(*_args, **_kwargs):
+        raise TimeoutError
+
+    monkeypatch.setattr("src.task_runtime.Runner.run", hang_then_time_out)
+    agents = create_task_agents(
+        conversation_model=ScriptedModel([]),
+        task_model=ScriptedModel([]),
+        task_tools=(),
+    )
+
+    result = run_async(run_customer_task("slow request", (), agents=agents))
+
+    assert result.outcome is TaskOutcome.TIMED_OUT
+    assert result.task.status is TaskStatus.TIMED_OUT
+    assert result.response.message == "This task took too long to finish. Please try again."
 
 
 def test_invalid_configuration_returns_fixed_failure_without_secret_details(run_async) -> None:

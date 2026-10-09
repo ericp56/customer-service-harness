@@ -25,6 +25,17 @@ def test_error_record_redacts_urls_and_includes_source_locations(capsys) -> None
     assert all(":" in frame for frame in payload["stack"])
 
 
+def test_account_number_is_emitted_only_when_well_formed(capsys) -> None:
+    Diagnostics().record(DiagnosticOutcome.SUCCESS, started_at=0, account_number="123")
+    assert json.loads(capsys.readouterr().out)["account_number"] == "123"
+
+    for rejected in ("12345 Main St", "zip 12345", "1234567890123", ""):
+        Diagnostics().record(DiagnosticOutcome.SUCCESS, started_at=0, account_number=rejected)
+        output = capsys.readouterr().out
+        assert "account_number" not in json.loads(output)
+        assert rejected.strip() == "" or rejected not in output
+
+
 def test_timing_records_only_allowlisted_step_and_duration(capsys) -> None:
     from src.observability import record_timing
 

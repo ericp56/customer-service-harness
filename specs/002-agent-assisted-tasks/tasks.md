@@ -139,6 +139,7 @@
 - [ ] T040 Run `k6 run load/echo_load.js` when available and record progress cadence and task completion behavior under expected concurrency; do not claim hard real-time delivery under queue/network delay.
 - [ ] T041 Conduct the 10-customer usability check for progress/final distinction and clarification/approval/recovery next actions, recording results against SC-007 in `specs/002-agent-assisted-tasks/quickstart.md`.
 - [X] T042 Verify feature artifact and requirement coverage, then update completed task checkboxes and the active feature pointer in `specs/002-agent-assisted-tasks/tasks.md` and `.specify/feature.json`.
+- [X] T043 Write a run-level regression test that forces the in-flight active-work timeout (the awaited agent run raises a timeout) and asserts a `TIMED_OUT` task, the fixed timeout message, and no raised exception, in `tests/unit/test_task_runtime.py`; fix the timeout handler in `src/task_runtime.py` to return the already-merged task state.
 
 ---
 

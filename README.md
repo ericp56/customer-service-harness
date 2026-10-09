@@ -8,7 +8,12 @@ The prototype is intentionally limited: it has no accounts, databases,
 transcripts, file uploads, or analytics. Message, task, and proposal context
 exists only in transient server-side session state. Initial capabilities are the
 existing UTC date/time lookup and deterministic synthetic service-information
-lookups; the approval example is a no-op simulation. No real customer records,
+lookups; the approval example is a no-op simulation. The caller tasks are the
+current time (stated as Greenwich Mean Time), retrieving a customer account
+(demo accounts 123 and 456, verified by zip code), and transferring to customer
+support. A caller gets three account-number attempts and two zip attempts per
+account; exhausting either ends the session until a new conversation starts.
+No real customer records,
 external business APIs, or write actions are enabled. Configure
 `OPENAI_API_KEY` and `OPENAI_MODEL` before starting; optional `OPENAI_BASE_URL`
 selects an OpenAI-compatible Responses service and `OPENAI_TIMEOUT_SECONDS`
@@ -18,6 +23,7 @@ shown every five seconds while work is active.
 Operational diagnostics are emitted as privacy-safe UTC JSON Lines on stdout for an external
 collector. The application does not retain logs; records never include chat content, credentials,
 model-service URLs, prompts, tool outputs, approval proposals, or provider payloads.
+Only a validated account number may appear; zip codes and other PII never do.
 Timing records use fixed step names (`model_request`, `date_time_tool`, and `chat_submission`) and
 non-negative `duration_ms` values to identify slow blocking work without exposing request data.
 Agents SDK tracing and durable agent sessions are disabled.

@@ -66,7 +66,7 @@ As a customer, I can stop work or recover from a failure without losing the conv
 
 1. **Given** work is in progress, **When** the customer cancels, **Then** no remaining task steps begin, the assistant reports whether a prior action completed, and the conversation remains available.
 2. **Given** a tool or model step fails, **When** the failure is handled, **Then** the customer sees a fixed, actionable recovery message without sensitive configuration or internal details.
-3. **Given** a task reaches its 60-second active-work limit, **When** it is stopped, **Then** the assistant reports that it could not finish and provides a safe next step.
+3. **Given** a task reaches its 60-second active-work limit, including while a model or tool step is still in progress, **When** it is stopped, **Then** the assistant reports that it could not finish and provides a safe next step, with no unhandled error shown to the customer.
 4. **Given** the customer retries after a recoverable failure, **When** the request is resubmitted, **Then** the system does not duplicate a completed task step or simulated action.
 
 ### Edge Cases
@@ -77,6 +77,7 @@ As a customer, I can stop work or recover from a failure without losing the conv
 - Cancellation arrives while a step is completing; the system reports any completed action and prevents subsequent steps.
 - A progress interval elapses just as the task completes, fails, is canceled, or enters a wait for customer input.
 - Multiple task steps or agent turns approach the active-work limit.
+- The active-work limit expires while a model request or tool step is in flight; the in-flight work is abandoned and the same fixed timeout recovery is shown, never a generic error.
 - The task-agent and conversation-agent disagree about whether a task is complete or safe to continue.
 - Diagnostic serialization fails while a task is in progress.
 

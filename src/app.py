@@ -24,6 +24,7 @@ from src.chat import (
     fail_submission,
     new_conversation,
 )
+from src.accounts import CallerSession
 from src.observability import DiagnosticOutcome, Diagnostics, HealthStatus
 from src.task_runtime import TaskOutcome, TaskStatus
 from src.task_runtime import (
@@ -124,6 +125,7 @@ def task_status(status: TaskStatus) -> tuple[StatusRole, str]:
         TaskStatus.CANCELED: ("status", "Task canceled."),
         TaskStatus.REJECTED: ("status", "I didn't proceed with the proposed action."),
         TaskStatus.TIMED_OUT: ("alert", "This task took too long to finish. Please try again."),
+        TaskStatus.SESSION_ENDED: ("alert", "This session has ended. Start a new conversation to continue."),
     }
     return messages[status]
 
@@ -147,8 +149,15 @@ def task_diagnostic_outcome(outcome: TaskOutcome) -> DiagnosticOutcome | None:
         TaskOutcome.DUPLICATE_STEP: DiagnosticOutcome.TASK_UNSUPPORTED_CAPABILITY,
         TaskOutcome.CAPABILITY_LIMIT: DiagnosticOutcome.TASK_UNSUPPORTED_CAPABILITY,
         TaskOutcome.TURN_LIMIT: DiagnosticOutcome.TASK_FAILED,
+        TaskOutcome.SESSION_ENDED: DiagnosticOutcome.TASK_SESSION_ENDED,
     }
     return mapping.get(outcome)
+
+
+def _session_ended(task_state: TaskState | None) -> bool:
+    return task_state is not None and (
+        task_state.status is TaskStatus.SESSION_ENDED or task_state.caller.ended
+    )
 
 
 def _task_event_outputs(
@@ -163,6 +172,7 @@ def _task_event_outputs(
     active = task_state is not None and task_state.status is TaskStatus.ACTIVE
     waiting_for_clarification = task_state is not None and task_state.status is TaskStatus.WAITING_FOR_CLARIFICATION
     waiting_for_approval = task_state is not None and task_state.status is TaskStatus.WAITING_FOR_APPROVAL
+    ended = _session_ended(task_state)
     display_history = [
         {"role": item["role"], "content": escape(item["content"], quote=False)}
         for item in render_history(state)
@@ -173,9 +183,9 @@ def _task_event_outputs(
         state,
         task_state,
         gr.HTML(value=_status_markup(status_role, status_text)),
-        gr.Button(interactive=not active and not waiting_for_approval),
-        gr.Button(visible=retry_visible, interactive=retry_visible),
-        gr.Button(visible=state.submission_state is SubmissionState.LIMIT_REACHED or waiting_for_clarification or waiting_for_approval),
+        gr.Button(interactive=not active and not waiting_for_approval and not ended),
+        gr.Button(visible=retry_visible and not ended, interactive=retry_visible and not ended),
+        gr.Button(visible=state.submission_state is SubmissionState.LIMIT_REACHED or waiting_for_clarification or waiting_for_approval or ended),
         gr.Button(visible=active or waiting_for_clarification or waiting_for_approval, interactive=active or waiting_for_clarification or waiting_for_approval),
         gr.Button(visible=waiting_for_approval, interactive=waiting_for_approval),
         gr.Button(visible=waiting_for_approval, interactive=waiting_for_approval),
@@ -192,6 +202,10 @@ async def task_send_event(
 ) -> AsyncIterator[tuple[object, ...]]:
     """Submit a task while yielding separate, fixed customer-safe progress status."""
     started_at = monotonic()
+    if _session_ended(current_task):
+        role, text = task_status(TaskStatus.SESSION_ENDED)
+        yield _task_event_outputs(state, current_task, "", role, text)
+        return
     if current_task is not None and current_task.status is TaskStatus.WAITING_FOR_APPROVAL:
         role, text = task_status(current_task.status)
         yield _task_event_outputs(state, current_task, content, role, text)
@@ -219,8 +233,9 @@ async def task_send_event(
         and current_task.status in (TaskStatus.WAITING_FOR_CLARIFICATION, TaskStatus.FAILED)
         else None
     )
+    carried_caller = current_task.caller if current_task is not None else None
     if continuing_task is None:
-        task_state = begin_task(content, now=started_at)
+        task_state = replace(begin_task(content, now=started_at), caller=carried_caller or CallerSession())
     else:
         resumed = resume_task(continuing_task, now=started_at)
         if resumed.outcome is not TaskOutcome.RESUMED:
@@ -230,7 +245,7 @@ async def task_send_event(
             return
         task_state = resumed.state
     task = asyncio.create_task(
-        run_customer_task(content, started.state.history, prior_task=continuing_task)
+        run_customer_task(content, started.state.history, prior_task=continuing_task, caller=carried_caller)
     )
     progress_count = 0
     try:
@@ -257,7 +272,11 @@ async def task_send_event(
         completed = complete_submission(started.state, result.response.message)
         mapped_outcome = task_diagnostic_outcome(result.outcome)
         if mapped_outcome is not None:
-            DIAGNOSTICS.record(mapped_outcome, started_at=started_at)
+            DIAGNOSTICS.record(
+                mapped_outcome,
+                started_at=started_at,
+                account_number=result.task.caller.current_account,
+            )
         role, text = task_status(result.task.status)
         yield _task_event_outputs(completed.state, result.task, "", role, text)
     except asyncio.CancelledError:

@@ -30,7 +30,14 @@ def test_synthetic_service_information_is_deterministic_and_allowlisted() -> Non
 def test_agent_tool_registry_is_strict_and_preserves_date_time() -> None:
     tools_by_name = {tool.name: tool for tool in TASK_TOOLS}
 
-    assert set(tools_by_name) == {TOOL_NAME, "lookupServiceInformation"}
+    assert set(tools_by_name) == {
+        TOOL_NAME,
+        "lookupServiceInformation",
+        "account_lookup",
+        "verify_account_zip",
+        "getSupportContact",
+    }
+    assert all(tool.strict_json_schema is True for tool in tools_by_name.values())
     lookup_schema = tools_by_name["lookupServiceInformation"].params_json_schema
     assert tools_by_name[TOOL_NAME].strict_json_schema is True
     assert tools_by_name["lookupServiceInformation"].strict_json_schema is True

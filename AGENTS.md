@@ -49,6 +49,12 @@ log store.
 - `src/tools.py` defines `getCurrentDateTimeIso` and deterministic synthetic
   read-only customer-service lookups. Schemas are strict and server-owned. The
   simulated consequential action is an in-memory no-op, not an external side effect.
+- `src/accounts.py` owns the hard-coded demo accounts and the pure caller
+  verification rules (three account-number attempts, two zip attempts per
+  account, session end, support-contact choice). The model only reaches them
+  through the `account_lookup`, `verify_account_zip`, and `getSupportContact`
+  tools and never sees a stored zip code. The task catalog is
+  `src/prompts/task_catalog.md`; a "caller" is the user who starts the conversation.
 - `src/observability.py` emits privacy-safe UTC JSON Lines to stdout and keeps
   bounded, in-process aggregate diagnostics only.
 
@@ -67,12 +73,16 @@ and resumes on customer input. Provider/configuration failures go through
   their values.
 - Never place chat content, prompts, model output, tool output, call IDs,
   provider payloads, URLs, or credentials in diagnostics, errors, test
-  fixtures that reach the service, or browser persistence.
+  fixtures that reach the service, or browser persistence. Zip codes, names,
+  and addresses are PII and must never be logged. The one exception is a
+  validated digits-only account number, which may appear in the optional
+  `account_number` diagnostic field.
 - Diagnostics have fixed categories and allowlisted timing steps only:
   `model_request`, `date_time_tool`, and `chat_submission`. Preserve
   non-negative integer `duration_ms` values.
 - Keep each model attempt bounded to 10 seconds with no automatic SDK retries.
-  Bound active task work to 60 seconds and no more than eight manager turns.
+  Bound active task work to 60 seconds and no more than eight manager turns
+  per caller message.
   Permit one strict capability call per model turn and disable parallel tool
   calls. Unknown, malformed, duplicate-call-ID, replayed-step, or unapproved
   capability calls are safe declared failures.

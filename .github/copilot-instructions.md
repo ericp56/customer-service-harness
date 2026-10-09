@@ -17,3 +17,6 @@ the state, timeout, strict-tool, accessibility, and performance invariants in
 For agent-task changes, also keep task/proposal state server-side and transient,
 disable SDK tracing and durable agent sessions, and ensure progress text is fixed
 application copy outside the chat transcript.
+For caller-service tasks, keep verification rules and attempt limits in
+`src/accounts.py`, never expose or log a zip code, and log only a validated
+account number.

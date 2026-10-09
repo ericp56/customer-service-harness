@@ -32,6 +32,7 @@ class DiagnosticOutcome(StrEnum):
     TASK_APPROVAL_REQUIRED = "task_approval_required"
     TASK_CLARIFICATION_REQUIRED = "task_clarification_required"
     TASK_UNSUPPORTED_CAPABILITY = "task_unsupported_capability"
+    TASK_SESSION_ENDED = "task_session_ended"
 
 
 class HealthStatus(StrEnum):
@@ -84,6 +85,7 @@ class Diagnostics:
         queue_depth: int = 0,
         error: Exception | None = None,
         step: str = "chat_submission",
+        account_number: str | None = None,
     ) -> None:
         event = DiagnosticEvent(
             name="chat_submission",
@@ -102,6 +104,9 @@ class Diagnostics:
             "step": step,
             "duration_ms": max(0, round((monotonic() - started_at) * 1000)),
         }
+        # Account numbers are the only caller-supplied value permitted in diagnostics.
+        if account_number is not None and re.fullmatch(r"[0-9]{1,12}", account_number):
+            payload["account_number"] = account_number
         if error:
             stack = [f"{frame.filename}:{frame.lineno}" for frame in traceback.extract_tb(error.__traceback__)]
             if stack:

@@ -10,6 +10,7 @@ from typing import Any
 
 from agents import ModelTimeoutError, RunConfig, Runner
 
+from src.accounts import CallerSession
 from src.ai_client import (
     AIServiceConfiguration,
     build_agent_model,
@@ -24,6 +25,10 @@ from src.tools import TASK_TOOLS, TaskToolLedger
 MAX_ACTIVE_SECONDS = 60.0
 MAX_MANAGER_TURNS = 8
 MAX_CAPABILITY_CALLS_PER_TURN = 1
+SESSION_ENDED_MESSAGE = (
+    "I can't help any further with this request, so this session has ended. "
+    "Please start a new conversation if you need more help."
+)
 
 
 class TaskStatus(StrEnum):
@@ -35,6 +40,7 @@ class TaskStatus(StrEnum):
     CANCELED = "canceled"
     REJECTED = "rejected"
     TIMED_OUT = "timed_out"
+    SESSION_ENDED = "session_ended"
 
 
 class TaskOutcome(StrEnum):
@@ -54,6 +60,7 @@ class TaskOutcome(StrEnum):
     CANCELED = "canceled"
     REJECTED = "rejected"
     TIMED_OUT = "timed_out"
+    SESSION_ENDED = "session_ended"
     INVALID_TRANSITION = "invalid_transition"
 
 
@@ -71,6 +78,7 @@ class TaskState:
     completed_step_results: tuple[str, ...] = ()
     pending_proposal: str | None = None
     continuation_context: tuple[str, ...] = ()
+    caller: CallerSession = CallerSession()
 
 
 @dataclass(frozen=True)
@@ -249,6 +257,13 @@ def fail_task(state: TaskState) -> TaskTransition:
     )
 
 
+def end_session(state: TaskState) -> TaskTransition:
+    if state.status is not TaskStatus.ACTIVE:
+        return TaskTransition(state, TaskOutcome.INVALID_TRANSITION)
+    ended = replace(state, status=TaskStatus.SESSION_ENDED, last_active_at=None, pending_proposal=None)
+    return TaskTransition(ended, TaskOutcome.SESSION_ENDED)
+
+
 def cancel_task(state: TaskState, *, now: float | None = None) -> TaskTransition:
     if state.status not in (TaskStatus.ACTIVE, TaskStatus.WAITING_FOR_CLARIFICATION, TaskStatus.WAITING_FOR_APPROVAL):
         return TaskTransition(state, TaskOutcome.INVALID_TRANSITION)
@@ -314,6 +329,7 @@ def _merge_tool_ledger(state: TaskState, ledger: TaskToolLedger) -> TaskState:
         capability_step_ids=tuple(ledger.capability_step_ids),
         completed_step_ids=tuple(ledger.completed_step_ids),
         completed_step_results=tuple(ledger.completed_step_results),
+        caller=ledger.caller,
     )
 
 
@@ -346,18 +362,26 @@ async def run_customer_task(
     configuration: AIServiceConfiguration | None = None,
     client: Any | None = None,
     prior_task: TaskState | None = None,
+    caller: CallerSession | None = None,
 ) -> TaskRunResult:
     """Run one bounded manager/specialist workflow without retaining provider errors."""
     started_at = monotonic()
-    previous_manager_turns = prior_task.turn_count if prior_task is not None else 0
     if prior_task is None:
-        task = begin_task(pending_text, now=started_at)
+        task = replace(begin_task(pending_text, now=started_at), caller=caller or CallerSession())
     else:
         resumed = resume_task(prior_task, now=started_at)
         if resumed.outcome is not TaskOutcome.RESUMED:
             response = ConversationResponse(status="failed", message="This task took too long to finish. Please try again.")
             return TaskRunResult(resumed.state, response, resumed.outcome)
-        task = resumed.state
+        # The manager-turn budget applies to each caller message, not cumulatively.
+        task = replace(resumed.state, turn_count=0)
+    if task.caller.ended:
+        ended = end_session(task)
+        return TaskRunResult(
+            ended.state,
+            ConversationResponse(status="session_ended", message=SESSION_ENDED_MESSAGE),
+            TaskOutcome.SESSION_ENDED,
+        )
     turn = begin_agent_turn(task)
     if turn.outcome is not TaskOutcome.TURN_STARTED:
         return TaskRunResult(
@@ -372,6 +396,7 @@ async def run_customer_task(
         capability_step_ids=list(turn.state.capability_step_ids),
         completed_step_ids=list(turn.state.completed_step_ids),
         completed_step_results=list(turn.state.completed_step_results),
+        caller=turn.state.caller,
     )
     remaining_seconds = remaining_active_seconds(turn.state)
     if remaining_seconds <= 0:
@@ -408,7 +433,7 @@ async def run_customer_task(
                 _conversation_input(history, pending_text, prior_task),
                 context=tool_ledger,
                 run_config=run_configuration,
-                max_turns=MAX_MANAGER_TURNS - previous_manager_turns,
+                max_turns=MAX_MANAGER_TURNS,
             ),
             timeout=remaining_seconds,
         )
@@ -437,7 +462,7 @@ async def run_customer_task(
                 last_active_at=None,
             )
             return TaskRunResult(
-                _merge_tool_ledger(timed_out.state, tool_ledger),
+                timed_out,
                 ConversationResponse(status="failed", message="This task took too long to finish. Please try again."),
                 TaskOutcome.TIMED_OUT,
             )
@@ -470,15 +495,19 @@ async def run_customer_task(
             TaskOutcome.TIMED_OUT,
         )
 
-    manager_turn_count = min(
-        MAX_MANAGER_TURNS,
-        previous_manager_turns + len(result.raw_responses),
-    )
+    manager_turn_count = min(MAX_MANAGER_TURNS, len(result.raw_responses))
     response = result.final_output
     elapsed_state = replace(
         _merge_tool_ledger(elapsed.state, tool_ledger),
         turn_count=manager_turn_count,
     )
+    if tool_ledger.caller.ended:
+        ended = end_session(elapsed_state)
+        return TaskRunResult(
+            ended.state,
+            ConversationResponse(status="session_ended", message=SESSION_ENDED_MESSAGE),
+            TaskOutcome.SESSION_ENDED,
+        )
     if not isinstance(response, ConversationResponse):
         failed = fail_task(elapsed_state)
         return TaskRunResult(

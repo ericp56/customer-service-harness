@@ -390,7 +390,7 @@ def test_task_diagnostics_and_stdout_exclude_customer_and_model_content(monkeypa
 def test_retry_resumes_failed_task_with_completed_step_ledger(monkeypatch, run_async) -> None:
     calls = 0
 
-    async def fail_then_resume(text: str, _history: tuple, *, prior_task=None) -> TaskRunResult:
+    async def fail_then_resume(text: str, _history: tuple, *, prior_task=None, caller=None) -> TaskRunResult:
         nonlocal calls
         calls += 1
         if prior_task is None:
