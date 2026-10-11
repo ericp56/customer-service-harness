@@ -10,6 +10,7 @@ from agents import Agent, RunResult, set_tracing_disabled
 from pydantic import BaseModel, ConfigDict
 
 from src.model_diagnostics import ModelCallHooks
+from src.observability import TaskName
 
 MAX_TASK_SPECIALIST_TURNS = 4
 _PROMPT_DIRECTORY = Path(__file__).parent / "prompts"
@@ -31,6 +32,7 @@ class TaskAgentResult(BaseModel):
     summary: str
     question: str | None = None
     proposal: str | None = None
+    task_name: TaskName | None = None
 
 
 class ConversationResponse(BaseModel):
@@ -39,6 +41,7 @@ class ConversationResponse(BaseModel):
     status: Literal["completed", "clarification_required", "approval_required", "unsupported", "failed", "session_ended"]
     message: str
     task_result: TaskAgentResult | None = None
+    task_name: TaskName | None = None
 
 
 async def _extract_task_result(result: RunResult[Any]) -> str:

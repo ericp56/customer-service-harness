@@ -37,6 +37,8 @@ Emit one content-free JSON line per model call from the agent runtime, using the
 
 ## Rollout & Rollback
 
+Catalog identity is an optional finite `TaskName` value on structured manager/specialist results and transient task state. Prompts require the manager to report the overarching catalog task, not a nested prerequisite. Preserve identity across resume and validate names again at the stdout boundary; omit absent/non-catalog names. Add `task_name` to completion and final outcome records only when known. Regression tests compare the enum with catalog headings and assert arbitrary names cannot reach stdout. This is additive; rollback removes the field and prompt instruction without altering task transitions.
+
 No data or contract migration. Roll back by reverting the change; existing lines are unaffected.
 
 ## Project Structure

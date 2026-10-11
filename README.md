@@ -38,6 +38,10 @@ ended flags. A `task_outcome` line records the same safe snapshot once for each
 caller-message task run, including clarification, approval, failure, timeout, and
 cancellation. These records never include account or zip values, task text,
 proposals, results, or capability identifiers.
+Catalog completions include `task_name` with the exact catalog title, such as
+`Retrieve the current time`. Names are validated against a fixed catalog enum;
+non-catalog completions omit the field. Clarification preserves the parent task
+name, and known names also appear on `task_outcome` records.
 Timing records use fixed step names (`model_request`, `date_time_tool`, and `chat_submission`) and
 non-negative `duration_ms` values to identify slow blocking work without exposing request data.
 Agents SDK tracing and durable agent sessions are disabled.

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from src import app
 from src.accounts import CallerSession
 from src.chat import new_conversation
@@ -163,3 +165,65 @@ def test_session_end_is_a_fixed_diagnostic_category() -> None:
         "alert",
         "This session has ended. Start a new conversation to continue.",
     )
+
+
+def test_catalog_completion_logs_parent_task_name_across_resume(monkeypatch, run_async, capsys) -> None:
+    from agents.testing import ModelStep, ScriptedModel, assistant_message
+
+    from src.task_agents import create_task_agents
+    from src.task_runtime import run_customer_task
+
+    model = ScriptedModel([
+        ModelStep(output=[assistant_message(
+            '{"status":"clarification_required","message":"Account number?",'
+            '"task_name":"Transfer to Customer Service"}'
+        )]),
+        ModelStep(output=[assistant_message(
+            '{"status":"completed","message":"Contact support.",'
+            '"task_result":{"status":"completed","summary":"Verified.",'
+            '"task_name":"Retrieve customer account","question":null,"proposal":null}}'
+        )]),
+    ])
+    agents = create_task_agents(conversation_model=model, task_model=ScriptedModel([]), task_tools=())
+
+    async def task_boundary(text, history, **kwargs):
+        return await run_customer_task(text, history, agents=agents, **kwargs)
+
+    monkeypatch.setattr(app, "run_customer_task", task_boundary)
+
+    async def scenario():
+        first = [output async for output in app.task_send_event("help", new_conversation(), None)]
+        return [output async for output in app.task_send_event("account", first[-1][2], first[-1][3])]
+
+    final = run_async(scenario())[-1]
+    records = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")]
+    [completion] = [record for record in records if record.get("message") == "task_completed"]
+    assert completion["task_name"] == "Transfer to Customer Service"
+    assert final[3].task_name.value == "Transfer to Customer Service"
+
+
+@pytest.mark.parametrize("title", ["Retrieve the current time", "Retrieve customer account", "Transfer to Customer Service"])
+def test_catalog_completion_names_reach_stdout(title, monkeypatch, run_async, capsys) -> None:
+    from agents.testing import ModelStep, ScriptedModel, assistant_message
+
+    from src.task_agents import create_task_agents
+    from src.task_runtime import run_customer_task
+
+    model = ScriptedModel([ModelStep(output=[assistant_message(json.dumps({
+        "status": "completed", "message": "Done.", "task_name": title,
+    }))])])
+    agents = create_task_agents(conversation_model=model, task_model=ScriptedModel([]), task_tools=())
+
+    async def task_boundary(text, history, **kwargs):
+        return await run_customer_task(text, history, agents=agents, **kwargs)
+
+    monkeypatch.setattr(app, "run_customer_task", task_boundary)
+
+    async def scenario():
+        return [output async for output in app.task_send_event("request", new_conversation(), None)]
+
+    run_async(scenario())
+    records = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")]
+    [completion] = [record for record in records if record.get("message") == "task_completed"]
+    [outcome] = [record for record in records if record.get("component") == "task_outcome"]
+    assert completion["task_name"] == outcome["task_name"] == title

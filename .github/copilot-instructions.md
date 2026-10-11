@@ -26,3 +26,5 @@ and random `task_id`, plus the explicit allowlisted task snapshot and final
 or zip values, tool I/O, or provider IDs. `OPENAI_REASONING` is optional; only
 the recognized SDK effort values are valid, and unknown values must use the
 fixed invalid-configuration diagnostic without echoing the value.
+Catalog completion/outcome records may emit `task_name` only from the fixed
+catalog `TaskName` enum; nested prerequisites must not replace the parent name.

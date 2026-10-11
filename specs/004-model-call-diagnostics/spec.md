@@ -108,6 +108,8 @@ As an operator, I can read safe task-progress and final-outcome metrics alongsid
 - **FR-014**: New progress and outcome lines MUST NOT include request or response content; proposals, continuation context, results, account values, zip values, capability/call/step identifiers, model/provider identifiers, URLs, credentials, or error text. Diagnostic failures MUST NOT alter task behavior.
 - **FR-015**: Progress snapshots MUST sample live in-process task/tool state without mutating task transitions. Elapsed active time MUST exclude time spent waiting for customer input and be clamped to the 60-second task budget.
 
+- **FR-016**: Completed catalog tasks MUST include `task_name` in `task_completed` diagnostics, exactly matching the title after `## Task - ` in the task catalog. Names MUST come from a fixed validated set, never arbitrary caller or model text. Clarification/resume MUST preserve task identity; nested prerequisites MUST NOT replace the parent task name. Non-catalog completions MUST omit the field rather than invent a name.
+
 ### Key Entities *(include if feature involves data)*
 
 - **Model Call Record**: One content-free line describing a single model call: role, sequence number, duration, outcome, token counts, and response shape.
@@ -125,6 +127,7 @@ As an operator, I can read safe task-progress and final-outcome metrics alongsid
 - **SC-006**: Across success, failure, clarification, approval, timeout, cancellation, and early-exit tests, each caller-message runtime invocation emits exactly one correlated `task_outcome` line and every started model call includes a progress snapshot.
 - **SC-007**: In 100% of privacy tests, new task-progress and task-outcome fields are limited to the specified allowlist; sentinel values placed in excluded state fields never appear in stdout.
 - **SC-008**: For all recognized effort values, both agent and synchronous request paths apply the configured value; unset/blank omits it, and unknown values emit invalid-configuration without sending a request.
+- **SC-009**: Tests MUST verify each catalog name, completion logging, clarification continuity, parent-task identity, and rejection or omission of unknown names without disclosure. Existing timing and privacy requirements remain unchanged.
 
 ## Assumptions
 

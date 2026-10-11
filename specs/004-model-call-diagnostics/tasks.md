@@ -65,6 +65,14 @@ T002 blocks T005 and T010. T003 blocks T006 and T010. T005 blocks T006 and T008.
 
 Validation: focused feature tests passed (86 tests), final full suite passed (155 tests), and the average 100-record model-call emitter check remained below 5 ms per call.
 
+## Phase 9: Catalog Task Names
+
+- [X] T024 Add catalog-name schema, completion-log, privacy, and resume tests in `tests/unit/test_task_agents.py`, `tests/unit/test_observability.py`, and `tests/integration/test_caller_session.py`.
+- [X] T025 Add finite catalog identity to structured results, prompts, transient state, and completion/outcome emitters in `src/task_agents.py`, `src/prompts/task_conversation.txt`, `src/prompts/task_executor.txt`, `src/task_runtime.py`, `src/observability.py`, and `src/app.py`.
+- [X] T026 Update diagnostics documentation in `README.md`, `AGENTS.md`, and `.github/copilot-instructions.md`; run focused tests and the full suite. T024 precedes T025; T025 precedes T026.
+
+Catalog-name validation: 27 focused tests and all 161 full-suite tests passed, including all catalog titles, arbitrary-name rejection/omission, and parent identity across clarification and nested prerequisites.
+
 ### New Task Dependencies
 
 - T014 blocks T015.

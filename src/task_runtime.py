@@ -22,7 +22,7 @@ from src.ai_client import (
 )
 from src.chat import ChatMessage, ConversationItem
 from src.model_diagnostics import ModelCallHooks, ModelCallRecorder
-from src.observability import TaskProgressSnapshot, record_task_outcome
+from src.observability import TaskName, TaskProgressSnapshot, record_task_outcome
 from src.task_agents import ConversationResponse, TaskAgents, create_task_agents
 from src.tools import TASK_TOOLS, TaskToolLedger
 
@@ -86,6 +86,7 @@ class TaskState:
     caller: CallerSession = CallerSession()
     # Random correlation value for diagnostics; never derived from content.
     task_id: str = field(default_factory=lambda: uuid4().hex)
+    task_name: TaskName | None = None
 
 
 @dataclass(frozen=True)
@@ -302,6 +303,8 @@ def _conversation_input(
         for item in history
         if isinstance(item, ChatMessage)
     ]
+    if prior_task is not None and prior_task.task_name is not None:
+        items.append({"role": "assistant", "content": "Continuing catalog task: " + prior_task.task_name.value})
     if prior_task is not None and prior_task.continuation_context:
         items.append(
             {
@@ -416,6 +419,7 @@ async def run_customer_task(
                 outcome=result.task.status.value,
                 started_at=started_at,
                 task_state=snapshot,
+                task_name=result.task.task_name,
             )
         except Exception:
             pass
@@ -611,6 +615,7 @@ async def run_customer_task(
             TaskOutcome.FAILED,
         ), tool_ledger, recorder.manager_turn_count)
 
+    elapsed_state = replace(elapsed_state, task_name=response.task_name or elapsed_state.task_name)
     if response.status == "completed":
         completed = complete_task(elapsed_state)
         return finish(TaskRunResult(completed.state, response, completed.outcome), tool_ledger, recorder.manager_turn_count)

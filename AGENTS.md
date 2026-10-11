@@ -90,6 +90,8 @@ and resumes on customer input. Provider/configuration failures go through
   account-verified, and session-ended flags. New progress/outcome records must
   never include account or zip values, model names, provider response IDs, or
   error text.
+  `task_completed` and `task_outcome` records may include `task_name` only from
+  the fixed `TaskName` enum matching the catalog titles; never arbitrary text.
 - Diagnostics have fixed categories and allowlisted timing steps only:
   `model_request`, `date_time_tool`, and `chat_submission`. Preserve
   non-negative integer `duration_ms` values. `model_call` and `task_outcome`

@@ -64,6 +64,18 @@ def test_task_id_is_emitted_only_when_a_random_hex_value(capsys) -> None:
         assert "task_id" not in json.loads(capsys.readouterr().out)
 
 
+def test_completed_task_names_are_allowlisted(capsys) -> None:
+    from src.observability import TaskName
+
+    for name in TaskName:
+        Diagnostics().record(DiagnosticOutcome.TASK_COMPLETED, started_at=0, task_name=name)
+        assert json.loads(capsys.readouterr().out)["task_name"] == name.value
+    Diagnostics().record(DiagnosticOutcome.TASK_COMPLETED, started_at=0, task_name="PRIVATE-TEXT")
+    output = capsys.readouterr().out
+    assert "task_name" not in json.loads(output)
+    assert "PRIVATE-TEXT" not in output
+
+
 def test_model_call_line_has_only_allowlisted_fields(capsys) -> None:
     from src.observability import record_model_call
 

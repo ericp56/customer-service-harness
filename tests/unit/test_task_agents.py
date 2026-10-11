@@ -1,7 +1,32 @@
+import json
+
 from agents import RunConfig, Runner
 from agents.testing import ModelStep, ScriptedModel, assistant_message, function_call
 
 from src.task_agents import ConversationResponse, create_task_agents
+
+
+def test_task_names_match_catalog_and_reject_arbitrary_text() -> None:
+    from pathlib import Path
+
+    import pytest
+    from pydantic import ValidationError
+
+    from src.observability import TaskName
+    from src.task_agents import TaskAgentResult
+
+    catalog = Path("src/prompts/task_catalog.md").read_text(encoding="utf-8")
+    titles = [line.removeprefix("## Task - ") for line in catalog.splitlines() if line.startswith("## Task - ")]
+    assert {name.value for name in TaskName} == set(titles)
+    for title in titles:
+        result = ConversationResponse.model_validate_json(
+            json.dumps({"status": "completed", "message": "Done.", "task_name": title})
+        )
+        assert result.task_name.value == title
+    with pytest.raises(ValidationError):
+        TaskAgentResult.model_validate_json(
+            '{"status":"completed","summary":"Done.","task_name":"PRIVATE-TEXT"}'
+        )
 
 
 def test_conversation_role_delegates_to_separate_task_agent(run_async) -> None:

@@ -289,6 +289,7 @@ async def task_send_event(
                 started_at=started_at,
                 account_number=result.task.caller.current_account,
                 task_id=result.task.task_id,
+                task_name=result.task.task_name,
             )
         role, text = task_status(result.task.status)
         yield _task_event_outputs(completed.state, result.task, "", role, text)
@@ -492,7 +493,7 @@ def _resolve_task_approval(
     )
     diagnostic_outcome = task_diagnostic_outcome(resolved.outcome)
     if diagnostic_outcome is not None:
-        DIAGNOSTICS.record(diagnostic_outcome, started_at=monotonic())
+        DIAGNOSTICS.record(diagnostic_outcome, started_at=monotonic(), task_name=resolved.state.task_name)
     status_role, status_text = task_status(resolved.state.status)
     return _task_event_outputs(next_state, resolved.state, "", status_role, status_text)
 

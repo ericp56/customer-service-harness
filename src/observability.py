@@ -40,6 +40,12 @@ class HealthStatus(StrEnum):
     NOT_READY = "not_ready"
 
 
+class TaskName(StrEnum):
+    CURRENT_TIME = "Retrieve the current time"
+    CUSTOMER_ACCOUNT = "Retrieve customer account"
+    CUSTOMER_SERVICE = "Transfer to Customer Service"
+
+
 @dataclass(frozen=True)
 class DiagnosticEvent:
     """A deliberately content-free event shape with a finite set of values."""
@@ -87,6 +93,7 @@ class Diagnostics:
         step: str = "chat_submission",
         account_number: str | None = None,
         task_id: str | None = None,
+        task_name: TaskName | None = None,
     ) -> None:
         event = DiagnosticEvent(
             name="chat_submission",
@@ -110,6 +117,8 @@ class Diagnostics:
             payload["account_number"] = account_number
         if task_id is not None and _TASK_ID_PATTERN.fullmatch(task_id):
             payload["task_id"] = task_id
+        if outcome is DiagnosticOutcome.TASK_COMPLETED and isinstance(task_name, TaskName):
+            payload["task_name"] = task_name.value
         if error:
             stack = [f"{frame.filename}:{frame.lineno}" for frame in traceback.extract_tb(error.__traceback__)]
             if stack:
@@ -266,6 +275,7 @@ def record_task_outcome(
     outcome: str,
     started_at: float,
     task_state: TaskProgressSnapshot,
+    task_name: TaskName | None = None,
 ) -> None:
     if (
         not _TASK_ID_PATTERN.fullmatch(task_id)
@@ -274,8 +284,7 @@ def record_task_outcome(
         or task_state.task_status != outcome
     ):
         raise ValueError("unsupported task outcome diagnostic")
-    _emit_json_line(
-        {
+    payload: dict[str, object] = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "component": "task_outcome",
             "level": "ERROR" if outcome in {"failed", "canceled", "timed_out"} else "INFO",
@@ -285,8 +294,10 @@ def record_task_outcome(
             "task_id": task_id,
             "outcome": outcome,
             "task_state": task_state.to_payload(),
-        }
-    )
+    }
+    if isinstance(task_name, TaskName):
+        payload["task_name"] = task_name.value
+    _emit_json_line(payload)
 
 
 def record_timing(step: str, started_at: float) -> None:
