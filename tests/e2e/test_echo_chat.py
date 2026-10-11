@@ -21,6 +21,8 @@ from src.task_runtime import (
     begin_task,
     request_simulated_approval,
 )
+from src.observability import TaskName
+from src.tools import TaskActivity
 
 
 pytestmark = pytest.mark.e2e
@@ -235,7 +237,15 @@ def test_clarification_resumes_existing_task(page, echo_url: str, monkeypatch) -
     page.goto(echo_url)
     calls = 0
 
-    async def task_with_clarification(text: str, _history: tuple, *, prior_task=None, caller=None) -> TaskRunResult:
+    async def task_with_clarification(
+        text: str,
+        _history: tuple,
+        *,
+        prior_task=None,
+        caller=None,
+        progress=None,
+    ) -> TaskRunResult:
+        assert progress is not None
         nonlocal calls
         calls += 1
         if prior_task is None:
@@ -268,9 +278,13 @@ def test_clarification_resumes_existing_task(page, echo_url: str, monkeypatch) -
 def test_progress_updates_after_five_seconds_outside_chat(page, echo_url: str, monkeypatch) -> None:
     page.goto(echo_url)
 
-    async def slow_task(text: str, _history: tuple, **_kwargs) -> TaskRunResult:
-        await asyncio.sleep(6.2)
-        task = TaskState(text, TaskStatus.COMPLETED, 6.2, None)
+    async def slow_task(text: str, _history: tuple, **kwargs) -> TaskRunResult:
+        progress = kwargs["progress"]
+        progress.set(TaskActivity.LOOKING_UP_INFORMATION)
+        await asyncio.sleep(5.2)
+        progress.set(TaskActivity.EVALUATING_RESULT, TaskName.CURRENT_TIME)
+        await asyncio.sleep(5.2)
+        task = TaskState(text, TaskStatus.COMPLETED, 10.4, None)
         response = ConversationResponse(status="completed", message="Synthetic result.")
         return TaskRunResult(task, response, TaskOutcome.COMPLETED)
 
@@ -280,9 +294,12 @@ def test_progress_updates_after_five_seconds_outside_chat(page, echo_url: str, m
     status = page.locator("#echo-status [role='status']")
 
     expect(status).to_contain_text("I'm working on that now.")
-    expect(status).to_contain_text("I'm still working on that.", timeout=6000)
+    expect(status).to_contain_text("I'm looking up information.", timeout=6000)
     assert 5.0 <= time.monotonic() - started_at <= 6.0
-    expect(page.locator("#echo-conversation")).not_to_contain_text("I'm still working on that.")
+    expect(status).to_contain_text(
+        "I'm evaluating the result for: Retrieve the current time.", timeout=6000
+    )
+    expect(page.locator("#echo-conversation")).not_to_contain_text("I'm looking up information.")
     expect(page.locator("#echo-conversation")).to_contain_text("Synthetic result.")
 
 

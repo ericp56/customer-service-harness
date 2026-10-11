@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from copy import deepcopy
 import json
+from types import SimpleNamespace
 
 import gradio as gr
 
@@ -23,6 +24,7 @@ from src.task_runtime import (
     request_simulated_approval,
 )
 from src.task_agents import ConversationResponse
+from src.tools import TaskActivity
 
 
 def state_from_result(result: app.CallbackResult) -> ActiveConversation:
@@ -214,6 +216,21 @@ def test_progress_status_rotation_uses_only_fixed_customer_safe_copy() -> None:
     assert app.progress_status(3) == app.progress_status(1)
 
 
+def test_progress_status_uses_known_activity_and_validated_task_name() -> None:
+    from src.observability import TaskName
+
+    lookup = SimpleNamespace(activity="looking_up_information", task_name=None)
+    evaluation = SimpleNamespace(activity="evaluating_result", task_name=TaskName.CURRENT_TIME)
+    unknown = SimpleNamespace(activity="unknown", task_name="PRIVATE-TEXT")
+
+    assert app.progress_status(1, lookup) == ("status", "I'm looking up information.")
+    assert app.progress_status(2, evaluation) == (
+        "status",
+        "I'm evaluating the result for: Retrieve the current time.",
+    )
+    assert app.progress_status(3, unknown) == app.progress_status(3)
+
+
 def test_task_outcomes_map_to_fixed_diagnostic_categories() -> None:
     assert app.task_diagnostic_outcome(TaskOutcome.COMPLETED) is DiagnosticOutcome.TASK_COMPLETED
     assert app.task_diagnostic_outcome(TaskOutcome.CANCELED) is DiagnosticOutcome.TASK_CANCELED
@@ -305,6 +322,43 @@ def test_task_event_yields_progress_outside_chat_history(monkeypatch, run_async)
         for output in outputs[1:-1]
     )
     assert outputs[-1][0][-1]["content"] == "Done."
+
+
+def test_task_event_samples_latest_activity_at_each_progress_tick(monkeypatch, run_async) -> None:
+    async def fake_task(*_args, **kwargs) -> TaskRunResult:
+        progress = kwargs.get("progress")
+        assert progress is not None
+        progress.set(TaskActivity.LOOKING_UP_INFORMATION)
+        await asyncio.sleep(0.025)
+        from src.observability import TaskName
+
+        progress.set(TaskActivity.EVALUATING_RESULT, TaskName.CURRENT_TIME)
+        await asyncio.sleep(0.025)
+        return TaskRunResult(
+            TaskState("current time", TaskStatus.COMPLETED, 0.05, None),
+            ConversationResponse(status="completed", message="Done."),
+            TaskOutcome.COMPLETED,
+        )
+
+    monkeypatch.setattr(app, "run_customer_task", fake_task)
+
+    async def collect() -> list[tuple[object, ...]]:
+        return [
+            output
+            async for output in app.task_send_event(
+                "current time",
+                new_conversation(),
+                None,
+                progress_interval_seconds=0.01,
+            )
+        ]
+
+    outputs = run_async(collect())
+    progress_copy = [output[4].value for output in outputs[1:-1]]
+
+    assert any("I'm looking up information." in value for value in progress_copy)
+    assert any("I'm evaluating the result for: Retrieve the current time." in value for value in progress_copy)
+    assert all(output[0] == [] for output in outputs[:-1])
 
 
 def test_approval_event_completes_simulation_once_and_rejects_replay() -> None:
@@ -413,8 +467,16 @@ def test_task_diagnostics_and_stdout_exclude_customer_and_model_content(monkeypa
 def test_retry_resumes_failed_task_with_completed_step_ledger(monkeypatch, run_async) -> None:
     calls = 0
 
-    async def fail_then_resume(text: str, _history: tuple, *, prior_task=None, caller=None) -> TaskRunResult:
+    async def fail_then_resume(
+        text: str,
+        _history: tuple,
+        *,
+        prior_task=None,
+        progress=None,
+        **_kwargs,
+    ) -> TaskRunResult:
         nonlocal calls
+        assert progress is not None
         calls += 1
         if prior_task is None:
             task = TaskState(

@@ -63,10 +63,13 @@ All entities below are transient and server-owned unless described as customer-v
 
 - **Purpose**: Temporary accessible status shown while active work continues.
 - **Fields**:
-  - `text`: fixed customer-safe text selected by the application.
+  - `activity`: optional finite application-owned phase, such as processing, information lookup, verification, or result evaluation.
+  - `task_name`: optional exact title from the fixed catalog enum, only after structured output validation.
+  - `text`: fixed customer-safe text rendered from the phase and optional validated name; never model-generated free text.
   - `scheduled_at`: monotonic interval marker.
   - `state`: active or stopped.
-- **Constraints**: Emit every five seconds while active and not waiting. Keep it outside customer/assistant message history; never include tool names, arguments, prompt/model details, or customer content.
+- **Ownership**: Mutable holder scoped to one active task-runtime invocation and shared only with its server-side tool ledger and UI callback.
+- **Constraints**: Sample and emit every five seconds while active and not waiting. Clear or replace phases when execution advances; do not leave a completed activity as current. If activity or name is unknown, use the existing fixed fallback copy. Keep it outside customer/assistant message history; never include capability names, arguments, prompt/model details, results, or customer content.
 
 ## TaskResult
 

@@ -87,7 +87,15 @@ def test_caller_session_carries_into_the_next_task(monkeypatch, run_async) -> No
     seen: list[CallerSession | None] = []
     verified = CallerSession(current_account="456", verified_account="456")
 
-    async def fake_task(text: str, _history: tuple, *, prior_task=None, caller=None) -> TaskRunResult:
+    async def fake_task(
+        text: str,
+        _history: tuple,
+        *,
+        prior_task=None,
+        caller=None,
+        progress=None,
+    ) -> TaskRunResult:
+        assert progress is not None
         seen.append(caller)
         return TaskRunResult(
             TaskState(text, TaskStatus.COMPLETED, 0.1, None, caller=verified),

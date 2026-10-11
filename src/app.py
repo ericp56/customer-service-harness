@@ -25,7 +25,7 @@ from src.chat import (
     new_conversation,
 )
 from src.accounts import CallerSession
-from src.observability import DiagnosticOutcome, Diagnostics, HealthStatus
+from src.observability import DiagnosticOutcome, Diagnostics, HealthStatus, TaskName
 from src.task_runtime import TaskOutcome, TaskStatus
 from src.task_runtime import (
     TaskState,
@@ -36,6 +36,7 @@ from src.task_runtime import (
     resume_task,
     run_customer_task,
 )
+from src.tools import TaskActivity, TaskProgress
 
 DIAGNOSTICS = Diagnostics()
 StatusRole = Literal["status", "alert"]
@@ -130,7 +131,22 @@ def task_status(status: TaskStatus) -> tuple[StatusRole, str]:
     return messages[status]
 
 
-def progress_status(update_number: int) -> tuple[StatusRole, str]:
+def progress_status(update_number: int, progress: TaskProgress | None = None) -> tuple[StatusRole, str]:
+    activity_messages = {
+        TaskActivity.PROCESSING: "I'm reviewing your request.",
+        TaskActivity.WORKING_ON_TASK: "I'm working on your task.",
+        TaskActivity.LOOKING_UP_INFORMATION: "I'm looking up information.",
+        TaskActivity.CHECKING_INFORMATION: "I'm checking your information.",
+        TaskActivity.EVALUATING_RESULT: "I'm evaluating the task result.",
+    }
+    activity = getattr(progress, "activity", None)
+    message = activity_messages.get(activity)
+    if message is not None:
+        task_name = getattr(progress, "task_name", None)
+        if activity == TaskActivity.EVALUATING_RESULT and isinstance(task_name, TaskName):
+            message = f"I'm evaluating the result for: {task_name.value}."
+        return "status", message
+
     messages = (
         "I'm still working on that.",
         "I'm continuing to work on that.",
@@ -245,8 +261,15 @@ async def task_send_event(
             yield _task_event_outputs(failed.state, resumed.state, content, role, text, retry_visible=True)
             return
         task_state = resumed.state
+    progress = TaskProgress()
     task = asyncio.create_task(
-        run_customer_task(content, started.state.history, prior_task=continuing_task, caller=carried_caller)
+        run_customer_task(
+            content,
+            started.state.history,
+            prior_task=continuing_task,
+            caller=carried_caller,
+            progress=progress,
+        )
     )
     progress_count = 0
     try:
@@ -256,10 +279,12 @@ async def task_send_event(
             try:
                 await asyncio.wait_for(asyncio.shield(task), timeout=progress_interval_seconds)
             except TimeoutError:
+                if task.done():
+                    break
                 tick = accrue_active_time(task_state, now=monotonic())
                 task_state = tick.state
                 progress_count += 1
-                role, text = progress_status(progress_count)
+                role, text = progress_status(progress_count, progress)
                 yield _task_event_outputs(started.state, task_state, content, role, text)
 
         result = task.result()

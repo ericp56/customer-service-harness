@@ -9,7 +9,7 @@ This is a UI/event contract on the existing Gradio chat page. It adds no public 
 | Event | Visible behavior | Conversation history |
 |---|---|---|
 | Accepted request | Existing user message appears once; task begins. | User message only until a final assistant answer. |
-| Progress | Accessible concise status appears at five-second active-work intervals; normal responsive delivery target is within one additional second. | Not added as an assistant message. |
+| Progress | Accessible concise status appears at five-second active-work intervals and reflects the latest known active phase. It uses fixed application copy and may include an exact validated catalog task name; unknown activity uses the existing fallback rotation. Normal responsive delivery target is within one additional second. | Not added as an assistant message. |
 | Clarification | Assistant asks one clear question and pauses active work. | Customer-facing question is a dialogue message; no progress status while waiting. |
 | Approval proposal | Assistant describes the simulated consequential action and shows explicit approve/reject/cancel controls. | Customer-facing proposal is dialogue; no action runs before approval. |
 | Approval/rejection | Decision applies only to the server-owned pending action and is consumed once. | Final/result dialogue follows the task outcome. |
@@ -22,6 +22,9 @@ This is a UI/event contract on the existing Gradio chat page. It adds no public 
 - Only one task may be active per conversation; duplicate submissions during active work are rejected with accessible status.
 - Capability requests must match a strict server-owned schema and allowlist; accept at most one invocation per model turn, eight conversation-manager turns per task, and four specialist turns per delegation.
 - Progress timing and terminal UI state are owned by the application; no model-provided text is used as a status update.
+- Progress timing and terminal UI state are owned by the application; no model-provided text is used as a status update.
+- Progress activity is transient to the current runtime invocation. It is updated only from actual application/SDK lifecycle events; capability identifiers are mapped to generic fixed customer-facing copy.
+- The existing initial status and two-message fallback rotation remain unchanged. A validated task title may be shown only when available; missing task identity is never inferred from caller text.
 - Model/task checkpoints are opaque server-side session state. They are never sent to the browser, logged, placed in URLs, or accepted from the client.
 - Accepted capability call IDs, completed step IDs, bounded step results, and structured specialist findings are retained only in server-side transient task state. On clarification or recoverable retry, the manager receives prior findings plus the new customer input; those findings are not inserted into chat history or diagnostics.
 - Customer clarification and approval are new UI events. While waiting, the task active-time clock is paused. Resume only if the remaining active-time budget is positive.

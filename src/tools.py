@@ -5,11 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import re
+from enum import StrEnum
 from typing import Any, Literal
 
 from agents import function_tool
 from agents.tool_context import ToolContext
 
+from src.observability import TaskName
 from src.accounts import (
     CallerSession,
     LookupResult,
@@ -40,6 +42,28 @@ class CapabilityPolicyError(RuntimeError):
     """A fixed, content-free rejection of a repeated or malformed capability call."""
 
 
+class TaskActivity(StrEnum):
+    PROCESSING = "processing"
+    WORKING_ON_TASK = "working_on_task"
+    LOOKING_UP_INFORMATION = "looking_up_information"
+    CHECKING_INFORMATION = "checking_information"
+    EVALUATING_RESULT = "evaluating_result"
+
+
+@dataclass
+class TaskProgress:
+    activity: TaskActivity | None = None
+    task_name: TaskName | None = None
+
+    def set(self, activity: TaskActivity, task_name: TaskName | None = None) -> None:
+        self.activity = activity if isinstance(activity, TaskActivity) else None
+        self.task_name = task_name if isinstance(task_name, TaskName) else None
+
+    def clear(self) -> None:
+        self.activity = None
+        self.task_name = None
+
+
 @dataclass
 class TaskToolLedger:
     capability_call_ids: list[str] = field(default_factory=list)
@@ -47,6 +71,7 @@ class TaskToolLedger:
     completed_step_ids: list[str] = field(default_factory=list)
     completed_step_results: list[str] = field(default_factory=list)
     caller: CallerSession = field(default_factory=CallerSession)
+    progress: TaskProgress = field(default_factory=TaskProgress)
 
     def claim(self, call_id: str, step_id: str) -> None:
         if not call_id or call_id in self.capability_call_ids:

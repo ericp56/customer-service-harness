@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict
 
 from src.model_diagnostics import ModelCallHooks
 from src.observability import TaskName
+from src.tools import TaskActivity, TaskProgress, TaskToolLedger
 
 MAX_TASK_SPECIALIST_TURNS = 4
 _PROMPT_DIRECTORY = Path(__file__).parent / "prompts"
@@ -57,6 +58,65 @@ class TaskAgents:
     task: Agent[Any]
 
 
+class TaskProgressHooks(ModelCallHooks):
+    def __init__(self, agent_role: str) -> None:
+        super().__init__(agent_role)
+        self._agent_role = agent_role
+
+    @staticmethod
+    def _progress(context: Any) -> TaskProgress | None:
+        ledger = getattr(context, "context", None)
+        if isinstance(ledger, TaskToolLedger):
+            return ledger.progress
+        return None
+
+    async def on_llm_start(self, context: Any, agent: Any, system_prompt: Any, input_items: Any) -> None:
+        await super().on_llm_start(context, agent, system_prompt, input_items)
+        progress = self._progress(context)
+        if progress is None:
+            return
+        if self._agent_role == "task":
+            progress.set(TaskActivity.WORKING_ON_TASK, progress.task_name)
+        elif progress.activity != TaskActivity.EVALUATING_RESULT:
+            progress.set(TaskActivity.PROCESSING, progress.task_name)
+
+    async def on_tool_start(self, context: Any, agent: Any, tool: Any) -> None:
+        await super().on_tool_start(context, agent, tool)
+        progress = self._progress(context)
+        if progress is None:
+            return
+        tool_name = getattr(tool, "name", None)
+        if self._agent_role == "conversation":
+            if tool_name == "delegate_to_task_agent":
+                progress.set(TaskActivity.WORKING_ON_TASK)
+            return
+        activity = {
+            "getCurrentDateTimeIso": TaskActivity.LOOKING_UP_INFORMATION,
+            "lookupServiceInformation": TaskActivity.LOOKING_UP_INFORMATION,
+            "account_lookup": TaskActivity.CHECKING_INFORMATION,
+            "verify_account_zip": TaskActivity.CHECKING_INFORMATION,
+            "getSupportContact": TaskActivity.LOOKING_UP_INFORMATION,
+        }.get(tool_name, TaskActivity.WORKING_ON_TASK)
+        progress.set(activity, progress.task_name)
+
+    async def on_tool_end(self, context: Any, agent: Any, tool: Any, result: object) -> None:
+        await super().on_tool_end(context, agent, tool, result)
+        progress = self._progress(context)
+        if progress is None:
+            return
+        tool_name = getattr(tool, "name", None)
+        if self._agent_role == "conversation" and tool_name == "delegate_to_task_agent":
+            progress.set(TaskActivity.EVALUATING_RESULT, progress.task_name)
+        elif self._agent_role == "task":
+            progress.set(TaskActivity.WORKING_ON_TASK, progress.task_name)
+
+    async def on_agent_end(self, context: Any, agent: Any, output: Any) -> None:
+        await super().on_agent_end(context, agent, output)
+        progress = self._progress(context)
+        if self._agent_role == "task" and progress is not None and isinstance(output, TaskAgentResult):
+            progress.set(progress.activity or TaskActivity.WORKING_ON_TASK, output.task_name)
+
+
 def create_task_agents(
     *,
     conversation_model: Any,
@@ -75,7 +135,7 @@ def create_task_agents(
         tool_description="Complete one bounded task step using approved capabilities.",
         custom_output_extractor=_extract_task_result,
         max_turns=MAX_TASK_SPECIALIST_TURNS,
-        hooks=ModelCallHooks("task"),
+        hooks=TaskProgressHooks("task"),
     )
     conversation_agent = Agent(
         name="Customer conversation assistant",

@@ -32,7 +32,7 @@ python -m src.app
 ```
 
 1. Submit a request answerable by a synthetic fixture; confirm the final answer is useful and contains no internal tool or orchestration details.
-2. Use the deterministic slow-task fixture; confirm a separate accessible progress status appears at five-second intervals while active and stops when the task completes or asks a question.
+2. Use the deterministic slow-task fixture; confirm a separate accessible progress status appears at five-second intervals, changes from lookup activity to result evaluation when that becomes the current phase, and stops when the task completes or asks a question. Confirm unknown activity falls back to the existing two fixed messages and progress never names a capability or includes model-provided copy.
 3. Ask a task requiring clarification; confirm updates pause, answer the question, and confirm processing resumes only with the remaining task budget.
 4. Trigger the simulated consequential step; confirm it has no effect before explicit approval, rejection/cancel does not execute it, and the UI displays the resulting outcome.
 5. Cancel a slow task; confirm no subsequent step starts and the result reports whether any step had already completed.

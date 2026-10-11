@@ -29,7 +29,7 @@ from src.task_runtime import (
     run_customer_task,
 )
 from src.task_agents import ConversationResponse, create_task_agents
-from src.tools import TASK_TOOLS
+from src.tools import TASK_TOOLS, TaskActivity, TaskProgress
 
 
 def test_active_work_budget_pauses_while_waiting_for_customer() -> None:
@@ -232,11 +232,14 @@ def test_runtime_executes_scripted_agents_and_completes_without_provider_calls(r
         task_tools=(),
     )
 
-    result = run_async(run_customer_task("Find support hours.", (), agents=agents))
+    progress = TaskProgress(TaskActivity.PROCESSING)
+    result = run_async(run_customer_task("Find support hours.", (), agents=agents, progress=progress))
 
     assert result.response.message == "Support is open weekdays."
     assert result.task.status is TaskStatus.COMPLETED
     assert result.task.turn_count == 2
+    assert progress.activity is None
+    assert progress.task_name is None
 
 
 def test_runtime_resumes_clarification_with_original_active_time_budget(run_async) -> None:

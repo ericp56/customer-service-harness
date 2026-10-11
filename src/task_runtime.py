@@ -21,10 +21,10 @@ from src.ai_client import (
     load_configuration,
 )
 from src.chat import ChatMessage, ConversationItem
-from src.model_diagnostics import ModelCallHooks, ModelCallRecorder
+from src.model_diagnostics import ModelCallRecorder
 from src.observability import TaskName, TaskProgressSnapshot, record_task_outcome
-from src.task_agents import ConversationResponse, TaskAgents, create_task_agents
-from src.tools import TASK_TOOLS, TaskToolLedger
+from src.task_agents import ConversationResponse, TaskAgents, TaskProgressHooks, create_task_agents
+from src.tools import TASK_TOOLS, TaskProgress, TaskToolLedger
 
 MAX_ACTIVE_SECONDS = 60.0
 MAX_MANAGER_TURNS = 8
@@ -403,6 +403,7 @@ async def run_customer_task(
     client: Any | None = None,
     prior_task: TaskState | None = None,
     caller: CallerSession | None = None,
+    progress: TaskProgress | None = None,
 ) -> TaskRunResult:
     """Run one bounded manager/specialist workflow without retaining provider errors."""
     started_at = monotonic()
@@ -412,6 +413,8 @@ async def run_customer_task(
         ledger: TaskToolLedger | None = None,
         turn_count: int | None = None,
     ) -> TaskRunResult:
+        if progress is not None:
+            progress.clear()
         try:
             snapshot = _task_progress_snapshot(result.task, ledger, turn_count=turn_count)
             record_task_outcome(
@@ -456,6 +459,7 @@ async def run_customer_task(
         completed_step_ids=list(turn.state.completed_step_ids),
         completed_step_results=list(turn.state.completed_step_results),
         caller=turn.state.caller,
+        progress=progress if progress is not None else TaskProgress(),
     )
     remaining_seconds = remaining_active_seconds(turn.state)
     if remaining_seconds <= 0:
@@ -498,7 +502,7 @@ async def run_customer_task(
                 context=tool_ledger,
                 run_config=run_configuration,
                 max_turns=MAX_MANAGER_TURNS,
-                hooks=ModelCallHooks("conversation"),
+                hooks=TaskProgressHooks("conversation"),
             ),
             timeout=remaining_seconds,
         )

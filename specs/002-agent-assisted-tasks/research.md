@@ -38,6 +38,13 @@
 - **Alternatives considered**: Leave the dependency unpinned or adopt experimental hosted multi-agent orchestration. Unpinned behavior undermines reproducibility; hosted multi-agent is experimental, provider-owned, and its documentation excludes SDK approval interruptions for local tools.
 - **Sources**: [openai-agents on PyPI](https://pypi.org/project/openai-agents/), [Agents SDK model guidance](https://openai.github.io/openai-agents-python/models/).
 
+### Activity-aware progress
+
+- **Decision**: Keep the current five-second UI tick and update its displayed copy from a per-invocation transient activity holder. Populate that holder from actual manager/specialist/capability lifecycle callbacks using finite phases. Use only fixed UI copy, with an optional catalog title already validated as `TaskName`; otherwise preserve the existing rotating fallback.
+- **Rationale**: Periodic copy should describe the latest known phase without adding extra UI events or moving progress into the transcript. The runtime ledger is the existing shared server-side context across nested agent/tool execution. `CallerSession` is immutable verification state and is not an appropriate live progress store.
+- **Alternatives considered**: Add text to `CallerSession`; that value is replaced independently during verification and is not shared as live UI state. Use arbitrary model-generated progress; that risks exposing content and contradicts the UI contract. Emit immediately on every phase transition; that changes the agreed five-second cadence.
+- **Verification**: Deterministic fakes hold a capability and evaluation open, then prove each scheduled tick samples the current phase using privacy-safe copy, with no stale phase after completion, wait, or cancellation.
+
 ## Validation Risks
 
 - Confirm the exact dependency constraints of the pinned Agents SDK with the repository's pinned OpenAI client during implementation setup.

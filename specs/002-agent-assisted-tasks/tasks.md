@@ -78,6 +78,16 @@
 - [X] T020 [US2] Yield status updates on five-second active-work intervals from the queued async generator in `src/app.py`; stop during waits/terminal states and prevent stale ticks from overwriting a newer state.
 - [X] T021 [US2] Add the deterministic slow-task browser journey and verify visible progress timing under normal event-queue responsiveness in `tests/e2e/test_echo_chat.py`.
 
+### Activity-Aware Progress Follow-up
+- [X] T044 [P] [US2] Add deterministic lifecycle-hook tests for processing, capability activity, result evaluation, unknown names, and validated `TaskName` handling in `tests/unit/test_task_agents.py`.
+- [X] T045 [P] [US2] Add callback tests proving each five-second tick samples the latest per-run activity, preserves fallback copy, and yields no stale progress after completion/wait/cancellation in `tests/integration/test_app.py`.
+- [X] T046 [US2] Add a finite transient progress holder and thread it through the task runtime/ledger without changing `CallerSession`, `TaskState`, diagnostics, or browser state in `src/tools.py` and `src/task_runtime.py`.
+- [X] T047 [US2] Compose progress updates with existing SDK model hooks and observe only actual lifecycle events plus validated structured task names in `src/task_agents.py`.
+- [X] T048 [US2] Render latest known activity as fixed accessible copy on the existing five-second tick, retaining current fallback rotation and terminal/wait precedence in `src/app.py`.
+- [X] T049 [US2] Extend the deterministic browser journey to verify lookup-to-evaluation progress copy and absence of internal identifiers in `tests/e2e/test_echo_chat.py`.
+- [X] T050 [US2] Document activity-specific progress and fallback behavior in `README.md` and `specs/002-agent-assisted-tasks/quickstart.md`.
+
+
 **Checkpoint**: Progress remains outside the transcript, appears during active work, and stops during waits and terminal states.
 
 ---

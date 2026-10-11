@@ -23,7 +23,15 @@ pytestmark = pytest.mark.e2e
 def test_second_wrong_zip_ends_the_session_until_reset(page, echo_url: str, monkeypatch) -> None:  # noqa: F811
     page.goto(echo_url)
 
-    async def verification(text: str, _history: tuple, *, prior_task=None, caller=None) -> TaskRunResult:
+    async def verification(
+        text: str,
+        _history: tuple,
+        *,
+        prior_task=None,
+        caller=None,
+        progress=None,
+    ) -> TaskRunResult:
+        assert progress is not None
         if prior_task is None:
             session = CallerSession(current_account="123")
         else:

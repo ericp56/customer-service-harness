@@ -22,7 +22,10 @@ defaults to 10. Optional `OPENAI_REASONING` accepts `none`, `minimal`, `low`,
 default. Unknown values are rejected as invalid configuration. The operator is
 responsible for choosing an effort supported by the selected model. Active tasks
 are limited to 60 seconds and progress updates are shown every five seconds while
-work is active.
+work is active. Progress copy reflects the latest known activity, such as looking
+up information or evaluating a result, without naming capabilities. It may include
+an exact catalog task title only when validated; otherwise the existing fixed
+fallback messages are used.
 
 Operational diagnostics are emitted as privacy-safe UTC JSON Lines on stdout for an external
 collector. The application does not retain logs; records never include chat content, credentials,

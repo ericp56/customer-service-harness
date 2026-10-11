@@ -30,14 +30,15 @@ As a customer, I receive a simple status while a task is taking time, so I know 
 
 **Why this priority**: Multi-step work can outlast the current synchronous response, and customers need feedback without being shown internal orchestration.
 
-**Independent Test**: Hold a deterministic task step open and verify a customer-safe status appears at five-second intervals, then stop updates when the task completes or asks the customer a question.
+**Independent Test**: Hold deterministic task execution and result evaluation open and verify the status at five-second intervals reflects the current known activity, then stop updates when the task completes or asks the customer a question.
 
 **Acceptance Scenarios**:
 
-1. **Given** a task remains active and is not waiting for customer input, **When** five seconds elapse, **Then** the customer sees a concise progress status that reveals no internal agent, tool, prompt, provider, or harness details.
-2. **Given** active work continues, **When** another five seconds elapse, **Then** another concise status is shown.
-3. **Given** the assistant is waiting for the customer, **When** time passes, **Then** no periodic work-in-progress status is shown.
-4. **Given** a task completes, fails, times out, or is canceled, **When** its terminal status is presented, **Then** periodic progress stops.
+1. **Given** a task remains active and is not waiting for customer input, **When** five seconds elapse, **Then** the customer sees concise fixed copy reflecting the latest known activity, without internal agent, capability, prompt, provider, or harness details.
+2. **Given** execution advances from a lookup to evaluating its result, **When** a progress interval elapses in each phase, **Then** the status changes to describe the current phase rather than claiming the earlier phase is still underway.
+3. **Given** a validated catalog task name is known for the activity, **When** progress is shown, **Then** the status may identify that task by its exact catalog name; otherwise it uses generic fixed copy or the existing rotating fallback messages.
+4. **Given** the assistant is waiting for the customer, **When** time passes, **Then** no periodic work-in-progress status is shown.
+5. **Given** a task completes, fails, times out, or is canceled, **When** its terminal status is presented, **Then** periodic progress stops.
 
 ### User Story 3 - Approve or Reject a Consequential Action (Priority: P2)
 
@@ -76,6 +77,7 @@ As a customer, I can stop work or recover from a failure without losing the conv
 - A task requires an unapproved capability, returns malformed data, has no matching synthetic lookup result, or replays a capability call identifier/completed step.
 - Cancellation arrives while a step is completing; the system reports any completed action and prevents subsequent steps.
 - A progress interval elapses just as the task completes, fails, is canceled, or enters a wait for customer input.
+- The active phase is unknown or changes between progress ticks; use safe fallback copy and never retain a completed phase as current activity.
 - Multiple task steps or agent turns approach the active-work limit.
 - The active-work limit expires while a model request or tool step is in flight; the in-flight work is abandoned and the same fixed timeout recovery is shown, never a generic error.
 - The task-agent and conversation-agent disagree about whether a task is complete or safe to continue.
@@ -89,8 +91,8 @@ As a customer, I can stop work or recover from a failure without losing the conv
 - **FR-002**: The task role MUST identify the requested outcome, define bounded steps, and execute only approved capabilities. The conversation role MUST handle customer communication, clarification, work evaluation, and next-action selection.
 - **FR-003**: The conversation role MUST evaluate task results and choose whether to request another bounded task step, ask the customer for input, or provide a final response.
 - **FR-004**: The system MUST ask the customer for clarification when required information is missing and MUST wait for the customer's response before continuing.
-- **FR-005**: The system MUST schedule and provide progress at five-second intervals while work continues and the system is not waiting for customer input. Under normal service responsiveness, each update MUST be visible no later than one second after its scheduled interval.
-- **FR-006**: Progress and customer-facing task responses MUST NOT disclose internal reasoning, agent instructions, prompts, provider details, tool names or arguments, or orchestration implementation details.
+- **FR-005**: The system MUST schedule progress at five-second intervals while work continues and the system is not waiting for customer input. Each update MUST reflect the latest known active-work phase at the time of the tick. Under normal service responsiveness, each update MUST be visible no later than one second after its scheduled interval.
+- **FR-006**: Progress and customer-facing task responses MUST NOT disclose internal reasoning, agent instructions, prompts, provider details, capability identifiers or arguments, or orchestration implementation details. Progress MUST use fixed application copy and MAY include only a catalog task name validated against the fixed catalog enum; if activity or name is unknown, it MUST use generic fixed copy or the existing fallback messages.
 - **FR-007**: Progress MUST stop while waiting for customer input and upon task completion, failure, timeout, or cancellation. Progress status MUST be accessible and MUST NOT be recorded as customer/assistant task dialogue.
 - **FR-008**: The initial capability set MUST retain the current date/time capability and permit only deterministic synthetic customer-service lookups. Real database access, external service integrations, and real-world write actions are out of scope for this release.
 - **FR-009**: The system MUST require explicit customer approval before any consequential action is performed. The initial release MUST use a simulated consequential action with no real-world side effect to exercise proposal, approval, rejection, and cancellation outcomes.
