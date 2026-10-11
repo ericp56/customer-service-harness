@@ -12,7 +12,8 @@ import gradio as gr
 import uvicorn
 from fastapi import FastAPI
 
-from src.ai_client import AIServiceError, InvalidConfigurationError, generate_reply, load_configuration
+from src.ai_client import InvalidConfigurationError, load_configuration
+from src.catalog_policy import SCOPE_REFUSAL
 from src.chat import (
     ActiveConversation,
     ChatMessage,
@@ -167,6 +168,8 @@ def task_diagnostic_outcome(outcome: TaskOutcome) -> DiagnosticOutcome | None:
         TaskOutcome.CAPABILITY_LIMIT: DiagnosticOutcome.TASK_UNSUPPORTED_CAPABILITY,
         TaskOutcome.TURN_LIMIT: DiagnosticOutcome.TASK_FAILED,
         TaskOutcome.SESSION_ENDED: DiagnosticOutcome.TASK_SESSION_ENDED,
+        TaskOutcome.OUT_OF_SCOPE: DiagnosticOutcome.TASK_REJECTED,
+        TaskOutcome.CATALOG_HELP: DiagnosticOutcome.TASK_REJECTED,
     }
     return mapping.get(outcome)
 
@@ -288,6 +291,22 @@ async def task_send_event(
                 yield _task_event_outputs(started.state, task_state, content, role, text)
 
         result = task.result()
+        if result.outcome in (TaskOutcome.OUT_OF_SCOPE, TaskOutcome.CATALOG_HELP):
+            completed = complete_submission(started.state, result.response.message)
+            DIAGNOSTICS.record(
+                DiagnosticOutcome.TASK_REJECTED,
+                started_at=started_at,
+                task_id=result.task.task_id,
+            )
+            status_text = (
+                "That request is outside the supported tasks."
+                if result.outcome is TaskOutcome.OUT_OF_SCOPE
+                else "Ready to help with a supported task."
+            )
+            if result.task.status is TaskStatus.WAITING_FOR_CLARIFICATION:
+                status_text += " Your previous task is still waiting for a detail."
+            yield _task_event_outputs(completed.state, result.task, "", "status", status_text)
+            return
         if result.response.status == "failed" or result.response.status == "unsupported":
             failed = fail_submission(started.state)
             diagnostic_outcome = task_diagnostic_outcome(result.outcome) or DiagnosticOutcome.TASK_FAILED
@@ -361,35 +380,14 @@ def _callback_result(state: ActiveConversation, outcome: Outcome, input_value: s
 
 def _finish_sending(state: ActiveConversation, started_at: float) -> CallbackResult:
     assert state.pending_text is not None
-    try:
-        reply = generate_reply(state.pending_text, state.history)
-    except InvalidConfigurationError as error:
-        failed = fail_submission(state)
-        DIAGNOSTICS.record(
-            DiagnosticOutcome.INVALID_CONFIGURATION,
-            started_at=started_at,
-            error=error,
-        )
-        return _callback_result(failed.state, failed.outcome, state.pending_text)
-    except AIServiceError as error:
-        failed = fail_submission(state)
-        DIAGNOSTICS.record(
-            DiagnosticOutcome.OPERATIONAL_FAILURE,
-            started_at=started_at,
-            error=error,
-        )
-        return _callback_result(failed.state, failed.outcome, state.pending_text)
-
-    completed = complete_submission(state, reply.content, reply.tool_invocations)
-    diagnostic_outcome = _diagnostic_outcome(completed.outcome)
-    if diagnostic_outcome is not None:
-        DIAGNOSTICS.record(diagnostic_outcome, started_at=started_at)
+    completed = complete_submission(state, SCOPE_REFUSAL)
+    DIAGNOSTICS.record(DiagnosticOutcome.TASK_REJECTED, started_at=started_at)
     input_value = "" if completed.outcome is Outcome.SENT else (completed.state.pending_text or "")
     return _callback_result(completed.state, completed.outcome, input_value)
 
 
 def send_message(content: str, state: ActiveConversation) -> CallbackResult:
-    """Run validation and one echo callback without exposing content to diagnostics."""
+    """Fail closed on the retired synchronous callback without calling a provider."""
     started_at = monotonic()
     started = begin_submission(state, content)
     if started.outcome is not Outcome.SENT:

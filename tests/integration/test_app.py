@@ -12,7 +12,9 @@ import gradio as gr
 from src import app
 import pytest
 
+from src import ai_client
 from src.ai_client import ModelReply
+from src.catalog_policy import SCOPE_REFUSAL
 from src.chat import MAX_COMPLETED_PAIRS, ActiveConversation, Outcome, new_conversation
 from src.observability import DiagnosticOutcome
 from src.task_runtime import (
@@ -34,7 +36,7 @@ def state_from_result(result: app.CallbackResult) -> ActiveConversation:
 @pytest.fixture(autouse=True)
 def fake_reply(monkeypatch):
     monkeypatch.setattr(
-        app,
+        ai_client,
         "generate_reply",
         lambda text, history: ModelReply(f"Answer: {text}"),
     )
@@ -48,7 +50,7 @@ def test_send_callback_creates_one_exact_ordered_pair() -> None:
     assert result.input_value == ""
     assert [(item["role"], item["content"]) for item in result.history] == [
         ("user", content),
-        ("assistant", f"Answer: {content}"),
+        ("assistant", SCOPE_REFUSAL),
     ]
     assert result.state.pending_text is None
 
@@ -74,43 +76,43 @@ def test_limit_preserves_history_and_requires_new_conversation() -> None:
     assert reset.history == []
 
 
-def test_callback_failure_retains_input_and_prior_history(monkeypatch) -> None:
+def test_retired_callback_never_invokes_a_failing_provider(monkeypatch) -> None:
     prior = app.send_message("previous", new_conversation()).state
 
     def fail(_: str, __: tuple) -> ModelReply:
-        raise app.AIServiceError()
+        raise AssertionError("retired callback called provider")
 
-    monkeypatch.setattr(app, "generate_reply", fail)
+    monkeypatch.setattr(ai_client, "generate_reply", fail)
     failed = app.send_message("retain me", prior)
 
-    assert failed.outcome is Outcome.FAILED
-    assert len(failed.history) == 2
-    assert failed.state.pending_text == "retain me"
-    assert "Retry" in failed.status_text
+    assert failed.outcome is Outcome.SENT
+    assert len(failed.history) == 4
+    assert failed.state.pending_text is None
+    assert failed.history[-1]["content"] == SCOPE_REFUSAL
+    assert not failed.retry_visible
 
 
-def test_empty_callback_output_is_a_retryable_failure(monkeypatch) -> None:
-    monkeypatch.setattr(app, "generate_reply", lambda *_: ModelReply(""))
+def test_retired_callback_ignores_unrestricted_provider_output(monkeypatch) -> None:
+    monkeypatch.setattr(ai_client, "generate_reply", lambda *_: ModelReply("FORBIDDEN"))
 
     failed = app.send_message("original", new_conversation())
 
-    assert failed.outcome is Outcome.FAILED
-    assert failed.history == []
-    assert failed.state.pending_text == "original"
-    assert failed.retry_visible
+    assert failed.outcome is Outcome.SENT
+    assert failed.history[-1]["content"] == SCOPE_REFUSAL
+    assert failed.state.pending_text is None
+    assert not failed.retry_visible
 
 
 def test_retry_uses_retained_input_without_duplicate_pairs(monkeypatch) -> None:
-    monkeypatch.setattr(app, "generate_reply", lambda *_: (_ for _ in ()).throw(app.AIServiceError()))
-    failed = app.send_message("retry", new_conversation())
-    monkeypatch.setattr(app, "generate_reply", lambda text, history: ModelReply(f"Answer: {text}"))
+    failed = app.fail_submission(app.begin_submission(new_conversation(), "retry").state)
+    monkeypatch.setattr(ai_client, "generate_reply", lambda *_: (_ for _ in ()).throw(AssertionError("provider called")))
 
     recovered = app.retry_message(failed.state)
 
     assert recovered.outcome is Outcome.SENT
     assert [(item["role"], item["content"]) for item in recovered.history] == [
         ("user", "retry"),
-        ("assistant", "Answer: retry"),
+        ("assistant", SCOPE_REFUSAL),
     ]
 
 
@@ -142,7 +144,7 @@ def test_diagnostics_are_content_free_and_fixed_cardinality() -> None:
     assert secret not in serialized
     assert "visitor" not in serialized.lower()
     assert result.outcome is Outcome.SENT
-    assert DiagnosticOutcome.SUCCESS in snapshot["outcomes"]
+    assert DiagnosticOutcome.TASK_REJECTED in snapshot["outcomes"]
 
 
 def test_app_disables_rich_features_and_persistence() -> None:

@@ -1,5 +1,7 @@
 # Feature Specification: Agent-Assisted Customer Tasks
 
+**Catalog Scope Update (2026-10-11)**: Feature 003's catalog-only refinement supersedes generic service-information and simulated approval examples for the public application. This feature's pure lifecycle/harness behavior remains independently tested; public submissions execute only catalog tasks and use fixed refusals for unrelated work. See [the catalog boundary contract](../003-caller-service-tasks/contracts/catalog-boundary.md).
+
 **Feature Branch**: `002-agent-assisted-tasks`
 
 **Created**: 2026-10-04

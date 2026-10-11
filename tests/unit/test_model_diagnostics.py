@@ -23,6 +23,10 @@ _CLARIFY = (
 _SPECIALIST_DONE = '{"status":"completed","summary":"Done.","question":null,"proposal":null}'
 
 
+def _route(task_name: str = "Retrieve customer account", detail_kind: str = "none") -> str:
+    return json.dumps({"action": "task", "task_name": task_name, "detail_kind": detail_kind, "decline_remainder": False})
+
+
 def _lines(capsys) -> list[dict]:
     return [record for record in _records(capsys) if record.get("component") == "model_call"]
 
@@ -51,6 +55,10 @@ def _delegating_agents(tool_name: str, arguments: dict, reply: str):
     return create_task_agents(
         conversation_model=ScriptedModel(
             [
+                ModelStep(output=[assistant_message(_route(
+                    "Retrieve the current time" if tool_name == "getCurrentDateTimeIso" else "Retrieve customer account",
+                    "account_number" if tool_name == "account_lookup" else "none",
+                ))], usage=_usage(5, 1)),
                 ModelStep(
                     output=[function_call("delegate_to_task_agent", {"input": "Do it."}, call_id="d-1")],
                     usage=_usage(11, 3),
@@ -69,8 +77,14 @@ def _delegating_agents(tool_name: str, arguments: dict, reply: str):
 
 
 def _single_reply_agents(reply: str):
+    status = json.loads(reply)["status"]
+    steps = (
+        [ModelStep(output=[assistant_message(_route())]), ModelStep(output=[assistant_message(reply)])]
+        if status in ("clarification_required", "approval_required")
+        else [ModelStep(output=[assistant_message('{"action":"help","task_name":null,"detail_kind":"none","decline_remainder":false}')])]
+    )
     return create_task_agents(
-        conversation_model=ScriptedModel([ModelStep(output=[assistant_message(reply)])]),
+        conversation_model=ScriptedModel(steps),
         task_model=ScriptedModel([]),
         task_tools=(),
     )
@@ -82,20 +96,21 @@ def test_one_line_per_model_call_with_role_sequence_tokens_and_shape(run_async, 
     result = run_async(run_customer_task("What time is it?", (), agents=agents))
     lines = _lines(capsys)
 
-    assert [line["agent"] for line in lines] == ["conversation", "task", "task", "conversation"]
-    assert [line["call_index"] for line in lines] == [1, 2, 3, 4]
-    assert [line["outcome"] for line in lines] == ["success"] * 4
-    assert [line["input_tokens"] for line in lines] == [11, 20, 30, 40]
-    assert [line["output_tokens"] for line in lines] == [3, 4, 6, 9]
-    assert [line["total_tokens"] for line in lines] == [14, 24, 36, 49]
+    assert [line["agent"] for line in lines] == ["conversation", "conversation", "task", "task", "conversation"]
+    assert [line["call_index"] for line in lines] == [1, 2, 3, 4, 5]
+    assert [line["outcome"] for line in lines] == ["success"] * 5
+    assert [line["input_tokens"] for line in lines] == [5, 11, 20, 30, 40]
+    assert [line["output_tokens"] for line in lines] == [1, 3, 4, 6, 9]
+    assert [line["total_tokens"] for line in lines] == [6, 14, 24, 36, 49]
     assert all(line["usage_reported"] is True for line in lines)
     assert [line.get("tool") for line in lines] == [
+        None,
         "delegate_to_task_agent",
         "getCurrentDateTimeIso",
         None,
         None,
     ]
-    assert [(line["message_items"], line["tool_calls"]) for line in lines] == [(0, 1), (0, 1), (1, 0), (1, 0)]
+    assert [(line["message_items"], line["tool_calls"]) for line in lines] == [(1, 0), (0, 1), (0, 1), (1, 0), (1, 0)]
     assert all(isinstance(line["duration_ms"], int) and line["duration_ms"] >= 0 for line in lines)
     assert all(line["step"] == "model_request" for line in lines)
     assert {line["task_id"] for line in lines} == {result.task.task_id}
@@ -110,9 +125,9 @@ def test_call_snapshots_show_live_capability_progress_and_one_final_outcome(run_
     [outcome] = [record for record in records if record["component"] == "task_outcome"]
     snapshots = [call["task_state"] for call in calls]
 
-    assert [snapshot["turn_count"] for snapshot in snapshots] == [1, 1, 1, 2]
-    assert [snapshot["capability_count"] for snapshot in snapshots] == [0, 0, 1, 1]
-    assert [snapshot["completed_step_count"] for snapshot in snapshots] == [0, 0, 1, 1]
+    assert [snapshot["turn_count"] for snapshot in snapshots] == [1, 2, 2, 2, 3]
+    assert [snapshot["capability_count"] for snapshot in snapshots] == [0, 0, 0, 1, 1]
+    assert [snapshot["completed_step_count"] for snapshot in snapshots] == [0, 0, 0, 1, 1]
     assert all(snapshot["task_status"] == "active" for snapshot in snapshots)
     assert all(snapshot["active_duration_ms"] >= 0 for snapshot in snapshots)
     assert all(0 <= snapshot["remaining_active_ms"] <= 60_000 for snapshot in snapshots)
@@ -149,8 +164,8 @@ def test_waiting_and_early_exit_outcomes_are_logged_once(run_async, capsys) -> N
     )
     approval_records = _records(capsys)
     [approval] = [record for record in approval_records if record["component"] == "task_outcome"]
-    assert approval["outcome"] == "waiting_for_approval"
-    assert approval["task_state"]["approval_pending"] is True
+    assert approval["outcome"] == "failed"
+    assert approval["task_state"]["approval_pending"] is False
     assert approval["task_state"]["account_attempts"] == 2
     assert approval["task_state"]["zip_attempts"] == 1
     assert approval["task_state"]["account_verified"] is True
@@ -340,5 +355,5 @@ def test_task_id_persists_across_clarification_and_call_index_restarts(run_async
 
     assert first.task.status is TaskStatus.WAITING_FOR_CLARIFICATION
     assert second.task.task_id == first.task.task_id
-    assert [line["task_id"] for line in lines] == [first.task.task_id] * 2
-    assert [line["call_index"] for line in lines] == [1, 1]
+    assert [line["task_id"] for line in lines] == [first.task.task_id] * 3
+    assert [line["call_index"] for line in lines] == [1, 2, 1]

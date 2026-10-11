@@ -32,3 +32,4 @@
 ## Notes
 
 - Open decisions were resolved with the requester before drafting (account 456 zip, server-side enforcement, session end behavior, attempt limits, account-number logging).
+- Revalidated 2026-10-11 for catalog-only hardening: all 16 criteria remain satisfied. Unavailable-requester defaults are explicit: genuine service requests may transfer, separable mixed requests decline only the unrelated part, and greeting/help is fixed catalog copy. FR-016 through FR-022 map to T019-T025; SC-009 and SC-010 define observable acceptance and existing timing bounds. No unresolved clarification remains.

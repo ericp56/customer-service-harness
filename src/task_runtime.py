@@ -12,6 +12,7 @@ from uuid import uuid4
 from agents import ModelTimeoutError, RunConfig, Runner
 
 from src.accounts import CallerSession
+from src.catalog_policy import CATALOG_HELP, SAFE_FAILURE, SCOPE_REFUSAL, CatalogFacts, catalog_reply
 from src.ai_client import (
     AIServiceConfiguration,
     build_agent_model,
@@ -23,8 +24,8 @@ from src.ai_client import (
 from src.chat import ChatMessage, ConversationItem
 from src.model_diagnostics import ModelCallRecorder
 from src.observability import TaskName, TaskProgressSnapshot, record_task_outcome
-from src.task_agents import ConversationResponse, TaskAgents, TaskProgressHooks, create_task_agents
-from src.tools import TASK_TOOLS, TaskProgress, TaskToolLedger
+from src.task_agents import CatalogRoute, ConversationResponse, TaskAgents, TaskProgressHooks, catalog_conversation, create_task_agents
+from src.tools import TASK_TOOLS, TaskActivity, TaskProgress, TaskToolLedger
 
 MAX_ACTIVE_SECONDS = 60.0
 MAX_MANAGER_TURNS = 8
@@ -67,6 +68,8 @@ class TaskOutcome(StrEnum):
     SESSION_ENDED = "session_ended"
     INVALID_CONFIGURATION = "invalid_configuration"
     INVALID_TRANSITION = "invalid_transition"
+    OUT_OF_SCOPE = "out_of_scope"
+    CATALOG_HELP = "catalog_help"
 
 
 @dataclass(frozen=True)
@@ -87,6 +90,8 @@ class TaskState:
     # Random correlation value for diagnostics; never derived from content.
     task_id: str = field(default_factory=lambda: uuid4().hex)
     task_name: TaskName | None = None
+    catalog_facts: CatalogFacts = CatalogFacts()
+    catalog_input: str = ""
 
 
 @dataclass(frozen=True)
@@ -340,6 +345,9 @@ def _merge_tool_ledger(state: TaskState, ledger: TaskToolLedger) -> TaskState:
         completed_step_ids=tuple(ledger.completed_step_ids),
         completed_step_results=tuple(ledger.completed_step_results),
         caller=ledger.caller,
+        catalog_facts=ledger.facts,
+        catalog_input=ledger.caller_input,
+        task_name=ledger.task_name or state.task_name,
     )
 
 
@@ -419,10 +427,10 @@ async def run_customer_task(
             snapshot = _task_progress_snapshot(result.task, ledger, turn_count=turn_count)
             record_task_outcome(
                 task_id=result.task.task_id,
-                outcome=result.task.status.value,
+                outcome=(TaskStatus.REJECTED.value if result.outcome in (TaskOutcome.OUT_OF_SCOPE, TaskOutcome.CATALOG_HELP) else result.task.status.value),
                 started_at=started_at,
                 task_state=snapshot,
-                task_name=result.task.task_name,
+                task_name=(None if result.outcome in (TaskOutcome.OUT_OF_SCOPE, TaskOutcome.CATALOG_HELP) else result.task.task_name),
             )
         except Exception:
             pass
@@ -460,6 +468,12 @@ async def run_customer_task(
         completed_step_results=list(turn.state.completed_step_results),
         caller=turn.state.caller,
         progress=progress if progress is not None else TaskProgress(),
+        caller_input=pending_text,
+        facts=(
+            prior_task.catalog_facts
+            if prior_task is not None and prior_task.status is TaskStatus.FAILED and prior_task.catalog_input == pending_text
+            else CatalogFacts()
+        ),
     )
     remaining_seconds = remaining_active_seconds(turn.state)
     if remaining_seconds <= 0:
@@ -495,13 +509,90 @@ async def run_customer_task(
                 trace_include_sensitive_data=False,
             )
 
+        if agents.routing is None:
+            raise ValueError("invalid catalog router")
+        routing_input = [{"role": "user", "content": pending_text}]
+        if prior_task is not None and prior_task.task_name is not None:
+            expected_detail = "zip_code" if prior_task.caller.current_account is not None else "account_number"
+            routing_input.insert(0, {"role": "system", "content": (
+                "Application-owned pending catalog task: " + prior_task.task_name.value
+                + ". Expected detail: " + expected_detail + "."
+            )})
+        routed = await asyncio.wait_for(
+            Runner.run(
+                agents.routing,
+                routing_input,
+                context=tool_ledger,
+                run_config=run_configuration,
+                max_turns=1,
+                hooks=TaskProgressHooks("conversation"),
+            ),
+            timeout=remaining_seconds,
+        )
+        route = routed.final_output
+        if not isinstance(route, CatalogRoute):
+            raise ValueError("invalid catalog route")
+        if route.action in ("decline", "help"):
+            outcome = TaskOutcome.OUT_OF_SCOPE if route.action == "decline" else TaskOutcome.CATALOG_HELP
+            message = SCOPE_REFUSAL if route.action == "decline" else CATALOG_HELP
+            elapsed_route = accrue_active_time(turn.state, now=monotonic())
+            if elapsed_route.outcome is TaskOutcome.TIMED_OUT:
+                return finish(TaskRunResult(
+                    elapsed_route.state,
+                    ConversationResponse(status="failed", message="This task took too long to finish. Please try again."),
+                    TaskOutcome.TIMED_OUT,
+                ), tool_ledger, recorder.manager_turn_count)
+            if prior_task is not None:
+                declined_state = replace(prior_task, active_seconds=elapsed_route.state.active_seconds)
+            else:
+                declined_state = replace(elapsed_route.state, status=TaskStatus.REJECTED, last_active_at=None, task_name=None)
+            return finish(TaskRunResult(
+                declined_state,
+                ConversationResponse(status="declined" if route.action == "decline" else "catalog_help", message=message),
+                outcome,
+            ), tool_ledger, recorder.manager_turn_count)
+        admitted_name = route.task_name
+        if route.action == "continuation":
+            if prior_task is None or prior_task.task_name is None:
+                raise ValueError("invalid catalog continuation")
+            admitted_name = prior_task.task_name
+        if not isinstance(admitted_name, TaskName):
+            raise ValueError("invalid catalog task")
+        if prior_task is not None and prior_task.task_name not in (None, admitted_name):
+            switch_time = accrue_active_time(turn.state, now=monotonic())
+            if switch_time.outcome is TaskOutcome.TIMED_OUT:
+                return finish(TaskRunResult(
+                    switch_time.state,
+                    ConversationResponse(status="failed", message="This task took too long to finish. Please try again."),
+                    TaskOutcome.TIMED_OUT,
+                ), tool_ledger, recorder.manager_turn_count)
+            waiting = replace(
+                prior_task, status=TaskStatus.WAITING_FOR_CLARIFICATION,
+                active_seconds=switch_time.state.active_seconds, last_active_at=None,
+            )
+            return finish(TaskRunResult(
+                waiting,
+                ConversationResponse(
+                    status="clarification_required",
+                    message="Please finish or cancel your current task before starting another.",
+                    task_name=prior_task.task_name,
+                ),
+                TaskOutcome.PAUSED,
+            ), tool_ledger, recorder.manager_turn_count)
+        tool_ledger.task_name = admitted_name
+        tool_ledger.detail_kind = route.detail_kind
+        tool_ledger.progress.set(TaskActivity.WORKING_ON_TASK, admitted_name)
+        remaining_seconds = remaining_active_seconds(accrue_active_time(turn.state, now=monotonic()).state)
+        if remaining_seconds <= 0:
+            raise TimeoutError()
+        execution_agent = catalog_conversation(agents, admitted_name, route.detail_kind, tool_ledger.caller)
         result = await asyncio.wait_for(
             Runner.run(
-                agents.conversation,
+                execution_agent,
                 _conversation_input(history, pending_text, prior_task),
                 context=tool_ledger,
                 run_config=run_configuration,
-                max_turns=MAX_MANAGER_TURNS,
+                max_turns=MAX_MANAGER_TURNS - 1,
                 hooks=TaskProgressHooks("conversation"),
             ),
             timeout=remaining_seconds,
@@ -598,7 +689,7 @@ async def run_customer_task(
             TaskOutcome.TIMED_OUT,
         ), tool_ledger, recorder.manager_turn_count)
 
-    manager_turn_count = min(MAX_MANAGER_TURNS, len(result.raw_responses))
+    manager_turn_count = min(MAX_MANAGER_TURNS, 1 + len(result.raw_responses))
     response = result.final_output
     elapsed_state = replace(
         _merge_tool_ledger(elapsed.state, tool_ledger),
@@ -619,7 +710,17 @@ async def run_customer_task(
             TaskOutcome.FAILED,
         ), tool_ledger, recorder.manager_turn_count)
 
-    elapsed_state = replace(elapsed_state, task_name=response.task_name or elapsed_state.task_name)
+    elapsed_state = replace(elapsed_state, task_name=tool_ledger.task_name)
+    if tool_ledger.policy_violated or response.status not in ("completed", "clarification_required"):
+        response = ConversationResponse(status="failed", message=SAFE_FAILURE, task_name=tool_ledger.task_name)
+    else:
+        status, message = catalog_reply(
+            tool_ledger.task_name, tool_ledger.caller, tool_ledger.facts,
+            completed=response.status == "completed",
+        )
+        if route.decline_remainder and status != "failed":
+            message += " " + SCOPE_REFUSAL
+        response = ConversationResponse(status=status, message=message, task_name=tool_ledger.task_name)
     if response.status == "completed":
         completed = complete_task(elapsed_state)
         return finish(TaskRunResult(completed.state, response, completed.outcome), tool_ledger, recorder.manager_turn_count)
@@ -630,17 +731,5 @@ async def run_customer_task(
             continuation_context = (*continuation_context, response.task_result.model_dump_json())
         paused_state = replace(paused.state, continuation_context=continuation_context)
         return finish(TaskRunResult(paused_state, response, paused.outcome), tool_ledger, recorder.manager_turn_count)
-    if response.status == "approval_required":
-        proposal = response.task_result.proposal if response.task_result is not None else None
-        paused = request_simulated_approval(elapsed_state, proposal or "", now=monotonic())
-        if paused.outcome is not TaskOutcome.PAUSED:
-            failed = fail_task(paused.state)
-            return finish(TaskRunResult(
-                failed.state,
-                ConversationResponse(status="failed", message="I couldn't complete that task. Please try again."),
-                TaskOutcome.FAILED,
-            ), tool_ledger, recorder.manager_turn_count)
-        return finish(TaskRunResult(paused.state, response, paused.outcome), tool_ledger, recorder.manager_turn_count)
-
     failed = fail_task(elapsed_state)
     return finish(TaskRunResult(failed.state, response, TaskOutcome.FAILED), tool_ledger, recorder.manager_turn_count)

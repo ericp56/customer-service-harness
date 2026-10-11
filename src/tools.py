@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 import re
 from enum import StrEnum
@@ -12,6 +12,7 @@ from agents import function_tool
 from agents.tool_context import ToolContext
 
 from src.observability import TaskName
+from src.catalog_policy import CatalogFacts, allowed_capabilities
 from src.accounts import (
     CallerSession,
     LookupResult,
@@ -72,6 +73,34 @@ class TaskToolLedger:
     completed_step_results: list[str] = field(default_factory=list)
     caller: CallerSession = field(default_factory=CallerSession)
     progress: TaskProgress = field(default_factory=TaskProgress)
+    task_name: TaskName | None = None
+    caller_input: str = ""
+    detail_kind: Literal["none", "account_number", "zip_code"] = "none"
+    facts: CatalogFacts = field(default_factory=CatalogFacts)
+    policy_violated: bool = False
+
+    def authorize(self, tool_name: str, value: str | None = None) -> None:
+        allowed = allowed_capabilities(self.task_name)
+        valid = tool_name in allowed and not self.caller.ended
+        if tool_name == TOOL_NAME:
+            valid = valid and self.facts.timestamp is None
+        elif tool_name == "account_lookup":
+            valid = valid and self.detail_kind == "account_number" and self.facts.lookup is None
+        elif tool_name == "verify_account_zip":
+            valid = (
+                valid and self.detail_kind == "zip_code" and self.facts.zip_check is None
+                and self.caller.current_account is not None and self.caller.verified_account is None
+            )
+        elif tool_name == "getSupportContact":
+            valid = valid and self.caller.verified_account is not None and self.facts.contact is None
+        if value is not None:
+            valid = valid and bool(value.strip()) and (
+                value == self.caller_input.strip()
+                or re.search(r"(?<!\w)" + re.escape(value) + r"(?!\w)", self.caller_input) is not None
+            )
+        if not valid:
+            self.policy_violated = True
+            raise CapabilityPolicyError("capability call rejected")
 
     def claim(self, call_id: str, step_id: str) -> None:
         if not call_id or call_id in self.capability_call_ids:
@@ -106,9 +135,11 @@ def get_current_datetime_iso() -> str:
     strict_mode=True,
 )
 def current_datetime_tool(ctx: ToolContext[TaskToolLedger]) -> str:
+    ctx.context.authorize(TOOL_NAME)
     step_id = f"current-date-time-{len(ctx.context.capability_call_ids) + 1}"
     ctx.context.claim(ctx.tool_call_id, step_id)
     result = get_current_datetime_iso()
+    ctx.context.facts = replace(ctx.context.facts, timestamp=result)
     ctx.context.complete(step_id, result)
     return result
 
@@ -123,6 +154,7 @@ def lookup_service_information_tool(
     topic: Literal["hours", "contact"],
     step_id: str,
 ) -> str:
+    ctx.context.authorize("lookupServiceInformation")
     ctx.context.claim(ctx.tool_call_id, step_id)
     result = lookup_service_information(topic)
     ctx.context.complete(step_id, result)
@@ -154,8 +186,10 @@ def _next_step_id(ctx: ToolContext[TaskToolLedger], prefix: str) -> str:
     strict_mode=True,
 )
 def account_lookup_tool(ctx: ToolContext[TaskToolLedger], account_number: str) -> str:
+    ctx.context.authorize("account_lookup", account_number)
     step_id = _next_step_id(ctx, "account-lookup")
     ctx.context.caller, outcome = lookup_account(ctx.context.caller, account_number)
+    ctx.context.facts = replace(ctx.context.facts, lookup=outcome)
     result = _LOOKUP_RESULTS[outcome]
     ctx.context.complete(step_id, result)
     return result
@@ -167,8 +201,10 @@ def account_lookup_tool(ctx: ToolContext[TaskToolLedger], account_number: str) -
     strict_mode=True,
 )
 def verify_account_zip_tool(ctx: ToolContext[TaskToolLedger], zip_code: str) -> str:
+    ctx.context.authorize("verify_account_zip", zip_code)
     step_id = _next_step_id(ctx, "verify-zip")
     ctx.context.caller, outcome = verify_zip(ctx.context.caller, zip_code)
+    ctx.context.facts = replace(ctx.context.facts, zip_check=outcome)
     result = _ZIP_RESULTS[outcome]
     ctx.context.complete(step_id, result)
     return result
@@ -180,8 +216,10 @@ def verify_account_zip_tool(ctx: ToolContext[TaskToolLedger], zip_code: str) -> 
     strict_mode=True,
 )
 def support_contact_tool(ctx: ToolContext[TaskToolLedger]) -> str:
+    ctx.context.authorize("getSupportContact")
     step_id = _next_step_id(ctx, "support-contact")
     contact = support_contact(ctx.context.caller)
+    ctx.context.facts = replace(ctx.context.facts, contact=contact)
     result = (
         f"Customer support contact: {contact}"
         if contact
@@ -193,7 +231,6 @@ def support_contact_tool(ctx: ToolContext[TaskToolLedger]) -> str:
 
 TASK_TOOLS: tuple[Any, ...] = (
     current_datetime_tool,
-    lookup_service_information_tool,
     account_lookup_tool,
     verify_account_zip_tool,
     support_contact_tool,

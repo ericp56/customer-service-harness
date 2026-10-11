@@ -7,11 +7,13 @@ from pathlib import Path
 from typing import Any, Literal, Sequence
 
 from agents import Agent, RunResult, set_tracing_disabled
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from src.model_diagnostics import ModelCallHooks
+from src.accounts import CallerSession
+from src.catalog_policy import allowed_capabilities
 from src.observability import TaskName
-from src.tools import TaskActivity, TaskProgress, TaskToolLedger
+from src.tools import CapabilityPolicyError, TaskActivity, TaskProgress, TaskToolLedger
 
 MAX_TASK_SPECIALIST_TURNS = 4
 _PROMPT_DIRECTORY = Path(__file__).parent / "prompts"
@@ -39,10 +41,29 @@ class TaskAgentResult(BaseModel):
 class ConversationResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    status: Literal["completed", "clarification_required", "approval_required", "unsupported", "failed", "session_ended"]
+    status: Literal["completed", "clarification_required", "approval_required", "unsupported", "failed", "session_ended", "declined", "catalog_help"]
     message: str
     task_result: TaskAgentResult | None = None
     task_name: TaskName | None = None
+
+
+class CatalogRoute(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    action: Literal["task", "continuation", "decline", "help"]
+    task_name: TaskName | None = None
+    detail_kind: Literal["none", "account_number", "zip_code"] = "none"
+    decline_remainder: bool = False
+
+    @model_validator(mode="after")
+    def validate_route(self) -> CatalogRoute:
+        if (self.action == "task") != (self.task_name is not None):
+            raise ValueError("invalid catalog route")
+        if self.action in ("decline", "help") and (self.detail_kind != "none" or self.decline_remainder):
+            raise ValueError("invalid catalog route")
+        if self.task_name is TaskName.CURRENT_TIME and self.detail_kind != "none":
+            raise ValueError("invalid catalog route")
+        return self
 
 
 async def _extract_task_result(result: RunResult[Any]) -> str:
@@ -56,6 +77,7 @@ async def _extract_task_result(result: RunResult[Any]) -> str:
 class TaskAgents:
     conversation: Agent[Any]
     task: Agent[Any]
+    routing: Agent[Any] | None = None
 
 
 class TaskProgressHooks(ModelCallHooks):
@@ -79,6 +101,14 @@ class TaskProgressHooks(ModelCallHooks):
             progress.set(TaskActivity.WORKING_ON_TASK, progress.task_name)
         elif progress.activity != TaskActivity.EVALUATING_RESULT:
             progress.set(TaskActivity.PROCESSING, progress.task_name)
+
+    async def on_llm_end(self, context: Any, agent: Any, response: Any) -> None:
+        await super().on_llm_end(context, agent, response)
+        if sum(getattr(item, "type", None) == "function_call" for item in response.output) > 1:
+            ledger = getattr(context, "context", None)
+            if isinstance(ledger, TaskToolLedger):
+                ledger.policy_violated = True
+            raise CapabilityPolicyError("capability call rejected")
 
     async def on_tool_start(self, context: Any, agent: Any, tool: Any) -> None:
         await super().on_tool_start(context, agent, tool)
@@ -114,7 +144,42 @@ class TaskProgressHooks(ModelCallHooks):
         await super().on_agent_end(context, agent, output)
         progress = self._progress(context)
         if self._agent_role == "task" and progress is not None and isinstance(output, TaskAgentResult):
-            progress.set(progress.activity or TaskActivity.WORKING_ON_TASK, output.task_name)
+            ledger = getattr(context, "context", None)
+            parent_name = ledger.task_name if isinstance(ledger, TaskToolLedger) else None
+            progress.set(progress.activity or TaskActivity.WORKING_ON_TASK, parent_name or output.task_name)
+
+
+def _delegation_tool(task_agent: Agent[Any]) -> Any:
+    return task_agent.as_tool(
+        tool_name="delegate_to_task_agent",
+        tool_description="Complete one bounded catalog task step using approved capabilities.",
+        custom_output_extractor=_extract_task_result,
+        max_turns=MAX_TASK_SPECIALIST_TURNS,
+        hooks=TaskProgressHooks("task"),
+    )
+
+
+def catalog_conversation(
+    agents: TaskAgents,
+    task_name: TaskName,
+    detail_kind: str,
+    caller: CallerSession,
+) -> Agent[Any]:
+    context = (
+        "\nApplication-admitted parent task: " + task_name.value
+        + ". Caller detail kind: " + detail_kind
+        + ". Account selected: " + str(caller.current_account is not None)
+        + ". Account verified: " + str(caller.verified_account is not None)
+        + ". Work only on that task; do not answer unrelated portions."
+    )
+    specialist = agents.task.clone(
+        instructions=str(agents.task.instructions) + context,
+        tools=[tool for tool in agents.task.tools if tool.name in allowed_capabilities(task_name)],
+    )
+    return agents.conversation.clone(
+        instructions=str(agents.conversation.instructions) + context,
+        tools=[_delegation_tool(specialist)],
+    )
 
 
 def create_task_agents(
@@ -130,13 +195,7 @@ def create_task_agents(
         model=task_model,
         output_type=TaskAgentResult,
     )
-    task_tool = task_agent.as_tool(
-        tool_name="delegate_to_task_agent",
-        tool_description="Complete one bounded task step using approved capabilities.",
-        custom_output_extractor=_extract_task_result,
-        max_turns=MAX_TASK_SPECIALIST_TURNS,
-        hooks=TaskProgressHooks("task"),
-    )
+    task_tool = _delegation_tool(task_agent)
     conversation_agent = Agent(
         name="Customer conversation assistant",
         instructions=_instructions("task_conversation.txt"),
@@ -144,4 +203,11 @@ def create_task_agents(
         model=conversation_model,
         output_type=ConversationResponse,
     )
-    return TaskAgents(conversation=conversation_agent, task=task_agent)
+    routing_agent = Agent(
+        name="Customer catalog router",
+        instructions=_instructions("task_router.txt"),
+        tools=[],
+        model=conversation_model,
+        output_type=CatalogRoute,
+    )
+    return TaskAgents(conversation=conversation_agent, task=task_agent, routing=routing_agent)

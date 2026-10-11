@@ -2,13 +2,14 @@
 
 A prototype, privacy-safe AI customer-service chat. Visitors can ask for bounded
 tasks handled by a conversation assistant and a task specialist, with progress,
-clarification, cancellation, and approval controls in one transient conversation.
+clarification and cancellation controls in one transient conversation.
+The public application executes only the three tasks in its catalog; approval
+helpers remain internal harness examples, not public catalog work.
 
 The prototype is intentionally limited: it has no accounts, databases,
 transcripts, file uploads, or analytics. Message, task, and proposal context
 exists only in transient server-side session state. Initial capabilities are the
-existing UTC date/time lookup and deterministic synthetic service-information
-lookups; the approval example is a no-op simulation. The caller tasks are the
+existing date/time lookup and deterministic demo account verification. The caller tasks are the
 current time (stated as Greenwich Mean Time), retrieving a customer account
 (demo accounts 123 and 456, verified by zip code), and transferring to customer
 support. A caller gets three account-number attempts and two zip attempts per
@@ -27,6 +28,21 @@ up information or evaluating a result, without naming capabilities. It may inclu
 an exact catalog task title only when validated; otherwise the existing fixed
 fallback messages are used.
 
+Unrelated questions (including coding, system design, websites, and this
+application's technology or database) receive a fixed polite refusal, not a
+general-purpose answer or an operational error. Human Customer Service remains
+available for genuine service needs. A tool-free admission turn selects catalog
+work before execution; task-specific tool permissions, input provenance checks,
+and application-rendered replies prevent forged task labels or arbitrary model
+prose from becoming service results. Admission shares the existing conversation
+client and counts toward the eight-manager-turn and sixty-second active budgets.
+Separable mixed requests complete catalog work and decline the unrelated part.
+Diversions preserve paused verification and do not consume account/zip attempts;
+starting another task while one is paused requires finishing or canceling it.
+Retired synchronous app callbacks fail closed without calling a provider.
+Natural-language admission is probabilistic; the deterministic capability/output
+boundary reduces impact but does not claim complete prompt-injection immunity.
+
 Operational diagnostics are emitted as privacy-safe UTC JSON Lines on stdout for an external
 collector. The application does not retain logs; records never include chat content, credentials,
 model-service URLs, prompts, tool outputs, approval proposals, or provider payloads.
@@ -43,8 +59,11 @@ cancellation. These records never include account or zip values, task text,
 proposals, results, or capability identifiers.
 Catalog completions include `task_name` with the exact catalog title, such as
 `Retrieve the current time`. Names are validated against a fixed catalog enum;
-non-catalog completions omit the field. Clarification preserves the parent task
+non-catalog requests never generate catalog completion records. Clarification preserves the parent task
 name, and known names also appear on `task_outcome` records.
+Standalone refusals/help use the existing fixed `rejected` diagnostic outcome,
+omit task/account identifiers, and offer no Retry. No routing reason or content
+is logged.
 Timing records use fixed step names (`model_request`, `date_time_tool`, and `chat_submission`) and
 non-negative `duration_ms` values to identify slow blocking work without exposing request data.
 Agents SDK tracing and durable agent sessions are disabled.
@@ -89,6 +108,10 @@ describes manual checks, privacy-diagnostics inspection, and the optional k6
 release-candidate load test. k6 is intentionally an external prerequisite,
 not a Python dependency. The original [AI integration quickstart](specs/001-ai-chat-integration/quickstart.md)
 documents the provider configuration and date/time capability baseline.
+The [catalog boundary quickstart](specs/003-caller-service-tasks/quickstart.md)
+covers fixed refusals, permitted task execution and verification continuation.
+Normal tests use scripted model/tool boundaries; optional real-provider red-team
+checks are a separate deployment validation and never require content logging.
 
 ## Repository Guide
 

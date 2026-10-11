@@ -54,3 +54,26 @@ tests/unit/test_accounts.py  # new
 ## Complexity Tracking
 
 No new dependencies or services. The per-message turn budget deliberately changes an earlier aggregate-turn rule; the earlier test is updated to match.
+
+## Catalog-Only Refinement (2026-10-11)
+
+The conversation role performs a tool-free strict routing pass before execution. Its finite result selects a catalog task, a continuation, fixed greeting/help, or refusal; it may mark a separable unrelated portion. Routing shares the conversation model/client and diagnostics role, counts toward the eight manager turns and sixty-second active budget, and retains the ten-second model timeout. No new dependency or persistent state is introduced.
+
+The runtime authorizes the selected task on the transient ledger. Tools enforce a fixed task/stage allowlist at invocation: time only for the time task; account lookup and zip verification for account/transfer; support contact only for verified transfer. Account and zip arguments must originate from the caller's current message, not invented agent values. `lookupServiceInformation` is not available in the public catalog runtime. Parent transfer identity survives account prerequisites.
+
+Typed transient capability facts, caller state, and the admitted task determine application-owned replies. Arbitrary manager/specialist prose cannot become a displayed answer. Fixed account questions and mismatch/verification copy, a validated returned timestamp, and the application-selected contact cover the three catalog tasks. An unbacked completion or non-catalog proposal fails closed. Fixed greeting/help and refusal copy do not emit catalog completion records. Refusal during clarification preserves the paused task and attempt counts.
+
+The application adds a distinct scope outcome, while retaining existing retry behavior for real operational failures. Legacy synchronous app callbacks become fail-closed rather than calling the unrestricted reply adapter. Five-second progress and existing selector IDs remain unchanged.
+Completed facts are frozen and retained with the last transient submission input for exact-input failure retries. Clarification/new-input turns use fresh facts. Multi-call batches are rejected in lifecycle hooks before any dispatch. Supported-task switching while paused preserves the current task with fixed finish-or-cancel copy, not a retry loop. Refusal/help final diagnostics reuse the existing `rejected` status allowlist, omit task names and account values, and keep one final record.
+
+### Constitution Recheck
+
+PASS: clear non-error refusals and preserved continuation; no new sensitive diagnostic fields, storage, tracing, or sessions; pure narrow policy and typed facts; deterministic unit/integration/browser coverage; bounded extra routing latency; existing role/field allowlists; no dependencies. Semantic routing remains probabilistic, explicitly distinguished from deterministic execution/output enforcement.
+
+### Delivery and Validation
+
+Tasks T018-T025 are sequential except independent test preparation. Start with negative scripted-output and capability-spy tests, then routing/policy, fixed rendering, UI and legacy boundary, and browser/privacy checks. Reuse existing caller, agent, runtime, tool and callback tests. Run focused tests after each substantive edit and the full deterministic suite before completion. See `research.md`, `data-model.md`, `contracts/catalog-boundary.md`, and `quickstart.md`.
+
+### Rollout and Rollback
+
+Ship through the existing task callback after deterministic tests pass and review the routing prompt against the exact five examples. Optional real-provider red-team checks are not a substitute for boundary tests. Rollback reverts only this refinement, requires no migration, and restores the known general-purpose-answer risk; existing verification, reasoning, progress, and diagnostics features remain unchanged.

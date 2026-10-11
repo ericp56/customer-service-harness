@@ -39,3 +39,29 @@
 ## Dependencies
 
 T002 blocks T008, T010, and T014. T004 blocks T012. T008 and T010 block T012. T014 depends on T008.
+
+## Phase 6: Catalog Boundary Foundation
+
+- [X] T018 Refine feature 003 specification, plan, research, data model, contract, quickstart and requirements checklist for FR-016 through FR-022 in `specs/003-caller-service-tasks/`.
+- [X] T019 Add negative output/routing and unauthorized capability regressions to `tests/unit/test_caller_tasks.py` and `tests/unit/test_tools.py`.
+
+## Phase 7: User Story 4 - Stay Within the Catalog (P1)
+
+- [X] T020 [US4] Define strict tool-free routing and catalog-only prompts in `src/task_agents.py` and `src/prompts/`; execute routing within existing budgets in `src/task_runtime.py`.
+- [X] T021 [US4] Add pure fixed-response policy and typed transient capability facts in `src/catalog_policy.py` and task-scoped invocation checks in `src/tools.py`; keep verification rules in `src/accounts.py`.
+- [X] T022 [US4] Enforce tool-backed results, fixed refusals/help and paused-task preservation in `src/task_runtime.py`, preserving diagnostics and progress hooks.
+- [X] T023 [US4] Render refusals as normal dialogue and disable unrestricted legacy app callbacks in `src/app.py`; cover fixed status, continuation, no Retry and no completion diagnostics in `tests/integration/test_caller_session.py`.
+- [X] T024 [US4] Add deterministic browser refusal/continuation/privacy journeys in `tests/e2e/test_caller_verification.py` and update existing fake-boundary fixtures for explicit routing in `tests/`.
+
+## Phase 8: Hardening Verification
+
+- [X] T025 Run focused boundary checks, full deterministic pytest suite and browser coverage; update `README.md` and task checkboxes with actual results.
+
+T018 blocks T019-T025; T019 precedes T020-T022; T020 and T021 precede T022; T022 precedes T023; T023 precedes T024-T025. Independent unit and browser input matrices can be prepared in parallel, but shared runtime/tool contracts are sequential. MVP is fixed refusals with capability/output enforcement; do not ship a prompt-only intermediate stage.
+
+## Hardening Validation Results (2026-10-11)
+
+- Final full deterministic suite: `pytest -q --tb=short` -> 195 passed, 291 warnings, 23.76 seconds. Warnings are existing Gradio/pandas deprecations and the shared-port browser-fixture startup warning; no test failed.
+- Desktop (1280x900) and mobile (390x844) browser refusal/verification journeys passed, with no horizontal overflow, no browser storage, no Retry, unchanged attempt state, and successful zip continuation. Temporary Playwright screenshots were inspected.
+- Negative checks cover five unrelated examples, forged completion names/prose, malformed admission, poisoned tool text, wrong task/stage and invented arguments, batch rejection before dispatch, typed-fact retry reuse, mixed requests, fixed help, and paused-task switching. Existing diagnostics, timeout, cancellation and attempt-limit coverage passes.
+- `git diff --check` passed. No automated external provider calls, new dependency or persistence. Real-provider classification/red-team accuracy remains an explicitly separate deployment check; deterministic tests verify policy boundaries, not immunity to every semantic attack.

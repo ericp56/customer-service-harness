@@ -28,7 +28,9 @@ from src.task_runtime import (
     resume_task,
     run_customer_task,
 )
-from src.task_agents import ConversationResponse, create_task_agents
+from src.task_agents import CatalogRoute, ConversationResponse, create_task_agents
+from src.accounts import CallerSession
+from src.observability import TaskName
 from src.tools import TASK_TOOLS, TaskActivity, TaskProgress
 
 
@@ -206,6 +208,7 @@ def test_runtime_executes_scripted_agents_and_completes_without_provider_calls(r
     )
     conversation_model = ScriptedModel(
         [
+            ModelStep(output=[assistant_message('{"action":"task","task_name":"Retrieve customer account","detail_kind":"none","decline_remainder":false}')]),
             ModelStep(
                 output=[
                     function_call(
@@ -233,11 +236,11 @@ def test_runtime_executes_scripted_agents_and_completes_without_provider_calls(r
     )
 
     progress = TaskProgress(TaskActivity.PROCESSING)
-    result = run_async(run_customer_task("Find support hours.", (), agents=agents, progress=progress))
+    result = run_async(run_customer_task("Verify my account.", (), agents=agents, progress=progress, caller=CallerSession(current_account="123", verified_account="123")))
 
-    assert result.response.message == "Support is open weekdays."
+    assert result.response.message == "Your account is verified."
     assert result.task.status is TaskStatus.COMPLETED
-    assert result.task.turn_count == 2
+    assert result.task.turn_count == 3
     assert progress.activity is None
     assert progress.task_name is None
 
@@ -249,10 +252,13 @@ def test_runtime_resumes_clarification_with_original_active_time_budget(run_asyn
         0.0,
         0.0,
         turn_count=2,
+        task_name=TaskName.CUSTOMER_ACCOUNT,
+        caller=CallerSession(current_account="123", verified_account="123"),
     )
     paused = pause_task(initial, TaskStatus.WAITING_FOR_CLARIFICATION, now=3.0)
     conversation_model = ScriptedModel(
         [
+            ModelStep(output=[assistant_message('{"action":"continuation","task_name":null,"detail_kind":"none","decline_remainder":false}')]),
             ModelStep(
                 output=[
                     assistant_message(
@@ -280,17 +286,17 @@ def test_runtime_resumes_clarification_with_original_active_time_budget(run_asyn
 
     assert result.task.request == "Find support hours"
     assert result.task.active_seconds >= 3.0
-    assert result.task.turn_count == 1
+    assert result.task.turn_count == 2
     assert result.task.status is TaskStatus.COMPLETED
 
 
 def test_manager_turn_budget_applies_to_each_caller_message(monkeypatch, run_async) -> None:
-    captured = {}
+    captured = []
 
     async def final_one_turn(*_args, **kwargs):
-        captured["max_turns"] = kwargs["max_turns"]
+        captured.append(kwargs["max_turns"])
         return SimpleNamespace(
-            final_output=ConversationResponse(status="completed", message="Completed."),
+            final_output=(CatalogRoute(action="continuation") if len(captured) == 1 else ConversationResponse(status="completed", message="Completed.")),
             raw_responses=[object()],
         )
 
@@ -301,6 +307,8 @@ def test_manager_turn_budget_applies_to_each_caller_message(monkeypatch, run_asy
         10.0,
         None,
         turn_count=7,
+        task_name=TaskName.CUSTOMER_ACCOUNT,
+        caller=CallerSession(current_account="123", verified_account="123"),
     )
     agents = create_task_agents(
         conversation_model=ScriptedModel([]),
@@ -312,8 +320,8 @@ def test_manager_turn_budget_applies_to_each_caller_message(monkeypatch, run_asy
         run_customer_task("answer", (), agents=agents, prior_task=prior_task)
     )
 
-    assert captured["max_turns"] == 8
-    assert result.task.turn_count == 1
+    assert captured == [1, 7]
+    assert result.task.turn_count == 2
     assert result.outcome is TaskOutcome.COMPLETED
 
 
@@ -399,14 +407,14 @@ def test_model_failure_consumes_active_budget_and_does_not_reset_on_retry(monkey
     assert result.task.active_seconds > prior_task.active_seconds
 
 
-def test_actual_synthetic_tool_call_is_recorded_in_task_state(run_async) -> None:
+def test_actual_catalog_tool_call_is_recorded_in_task_state(run_async) -> None:
     task_model = ScriptedModel(
         [
             ModelStep(
                 output=[
                     function_call(
-                        "lookupServiceInformation",
-                        {"topic": "hours", "step_id": "lookup-hours-1"},
+                        "getCurrentDateTimeIso",
+                        {},
                         call_id="tool-call-1",
                     )
                 ]
@@ -423,6 +431,7 @@ def test_actual_synthetic_tool_call_is_recorded_in_task_state(run_async) -> None
     )
     conversation_model = ScriptedModel(
         [
+            ModelStep(output=[assistant_message('{"action":"task","task_name":"Retrieve the current time","detail_kind":"none","decline_remainder":false}')]),
             ModelStep(
                 output=[
                     function_call(
@@ -449,10 +458,9 @@ def test_actual_synthetic_tool_call_is_recorded_in_task_state(run_async) -> None
         task_tools=TASK_TOOLS,
     )
 
-    result = run_async(run_customer_task("Find support hours.", (), agents=agents))
+    result = run_async(run_customer_task("What time is it?", (), agents=agents))
 
     assert result.task.capability_call_ids == ("tool-call-1",)
-    assert result.task.completed_step_ids == ("lookup-hours-1",)
-    assert result.task.completed_step_results == (
-        "Support is available Monday through Friday, 09:00 to 17:00 UTC.",
-    )
+    assert result.task.completed_step_ids == ("current-date-time-1",)
+    assert len(result.task.completed_step_results) == 1
+    assert "Greenwich Mean Time" in result.response.message
