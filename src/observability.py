@@ -132,6 +132,73 @@ def _sanitize(message: str) -> str:
 _TASK_ID_PATTERN = re.compile(r"[0-9a-f]{32}")
 MODEL_CALL_AGENTS = frozenset({"conversation", "task"})
 MODEL_CALL_OUTCOMES = frozenset({"success", "timeout", "error", "canceled"})
+TASK_STATUSES = frozenset(
+    {
+        "active",
+        "waiting_for_clarification",
+        "waiting_for_approval",
+        "completed",
+        "failed",
+        "canceled",
+        "rejected",
+        "timed_out",
+        "session_ended",
+    }
+)
+_TASK_COUNT_FIELDS = (
+    "active_duration_ms",
+    "remaining_active_ms",
+    "turn_count",
+    "capability_count",
+    "completed_step_count",
+    "account_attempts",
+    "zip_attempts",
+)
+
+
+@dataclass(frozen=True)
+class TaskProgressSnapshot:
+    task_status: str
+    active_duration_ms: int
+    remaining_active_ms: int
+    turn_count: int
+    capability_count: int
+    completed_step_count: int
+    approval_pending: bool
+    account_attempts: int
+    zip_attempts: int
+    account_verified: bool
+    session_ended: bool
+
+    def __post_init__(self) -> None:
+        if self.task_status not in TASK_STATUSES:
+            raise ValueError("unsupported task status")
+        if any(type(getattr(self, name)) is not int or getattr(self, name) < 0 for name in _TASK_COUNT_FIELDS):
+            raise ValueError("invalid task metric")
+        if any(type(value) is not bool for value in (self.approval_pending, self.account_verified, self.session_ended)):
+            raise ValueError("invalid task flag")
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "task_status": self.task_status,
+            "active_duration_ms": self.active_duration_ms,
+            "remaining_active_ms": self.remaining_active_ms,
+            "turn_count": self.turn_count,
+            "capability_count": self.capability_count,
+            "completed_step_count": self.completed_step_count,
+            "approval_pending": self.approval_pending,
+            "account_attempts": self.account_attempts,
+            "zip_attempts": self.zip_attempts,
+            "account_verified": self.account_verified,
+            "session_ended": self.session_ended,
+        }
+
+
+def _emit_json_line(payload: dict[str, object]) -> None:
+    try:
+        print(json.dumps(payload, separators=(",", ":"), ensure_ascii=True), file=sys.stdout, flush=True)
+    except (TypeError, ValueError):
+        print("diagnostic serialization failed", file=sys.stdout, flush=True)
 
 
 def record_model_call(
@@ -150,6 +217,7 @@ def record_model_call(
     message_items: int = 0,
     tool_calls: int = 0,
     tool: str | None = None,
+    task_state: TaskProgressSnapshot | None = None,
 ) -> None:
     """Emit one content-free line for a single model call from a fixed field allowlist."""
     if (
@@ -157,6 +225,7 @@ def record_model_call(
         or agent not in MODEL_CALL_AGENTS
         or outcome not in MODEL_CALL_OUTCOMES
         or call_index < 1
+        or (task_state is not None and not isinstance(task_state, TaskProgressSnapshot))
     ):
         raise ValueError("unsupported model call diagnostic")
     payload: dict[str, object] = {
@@ -186,10 +255,38 @@ def record_model_call(
         )
         if tool is not None:
             payload["tool"] = tool
-    try:
-        print(json.dumps(payload, separators=(",", ":"), ensure_ascii=True), file=sys.stdout, flush=True)
-    except (TypeError, ValueError):
-        print("diagnostic serialization failed", file=sys.stdout, flush=True)
+    if task_state is not None:
+        payload["task_state"] = task_state.to_payload()
+    _emit_json_line(payload)
+
+
+def record_task_outcome(
+    *,
+    task_id: str,
+    outcome: str,
+    started_at: float,
+    task_state: TaskProgressSnapshot,
+) -> None:
+    if (
+        not _TASK_ID_PATTERN.fullmatch(task_id)
+        or outcome not in TASK_STATUSES
+        or not isinstance(task_state, TaskProgressSnapshot)
+        or task_state.task_status != outcome
+    ):
+        raise ValueError("unsupported task outcome diagnostic")
+    _emit_json_line(
+        {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "component": "task_outcome",
+            "level": "ERROR" if outcome in {"failed", "canceled", "timed_out"} else "INFO",
+            "message": outcome,
+            "step": "chat_submission",
+            "duration_ms": max(0, round((monotonic() - started_at) * 1000)),
+            "task_id": task_id,
+            "outcome": outcome,
+            "task_state": task_state.to_payload(),
+        }
+    )
 
 
 def record_timing(step: str, started_at: float) -> None:

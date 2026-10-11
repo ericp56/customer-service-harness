@@ -21,4 +21,8 @@ For caller-service tasks, keep verification rules and attempt limits in
 `src/accounts.py`, never expose or log a zip code, and log only a validated
 account number.
 For model-call diagnostics, emit only the fixed content-free `model_call` fields
-and a random `task_id`; never log prompts, replies, tool I/O, or provider IDs.
+and random `task_id`, plus the explicit allowlisted task snapshot and final
+`task_outcome` record; never log prompts, replies, proposals, results, account
+or zip values, tool I/O, or provider IDs. `OPENAI_REASONING` is optional; only
+the recognized SDK effort values are valid, and unknown values must use the
+fixed invalid-configuration diagnostic without echoing the value.

@@ -14,6 +14,7 @@ import openai
 from agents import ModelSettings, RunConfig
 from agents.models.openai_responses import OpenAIResponsesModel
 from openai import AsyncOpenAI, OpenAI
+from openai.types.shared import Reasoning, ReasoningEffort
 
 from src.chat import ChatMessage, ConversationItem, ToolInvocation
 from src.observability import record_timing
@@ -36,6 +37,7 @@ class AIServiceConfiguration:
     model: str
     base_url: str | None
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
+    reasoning_effort: ReasoningEffort = None
 
 
 @dataclass(frozen=True)
@@ -61,12 +63,15 @@ def build_agent_model(configuration: AIServiceConfiguration, *, client: AsyncOpe
 
 def build_agent_run_config(configuration: AIServiceConfiguration) -> RunConfig:
     """Build a stateless, untraced SDK run with bounded sequential tool calls."""
+    model_settings: dict[str, Any] = {
+        "timeout": configuration.timeout_seconds,
+        "store": False,
+        "parallel_tool_calls": False,
+    }
+    if configuration.reasoning_effort is not None:
+        model_settings["reasoning"] = Reasoning(effort=configuration.reasoning_effort)
     return RunConfig(
-        model_settings=ModelSettings(
-            timeout=configuration.timeout_seconds,
-            store=False,
-            parallel_tool_calls=False,
-        ),
+        model_settings=ModelSettings(**model_settings),
         tracing_disabled=True,
         trace_include_sensitive_data=False,
     )
@@ -88,7 +93,14 @@ def load_configuration(environ: dict[str, str] | None = None) -> AIServiceConfig
         raise InvalidConfigurationError() from error
     if not 0 < timeout_seconds <= DEFAULT_TIMEOUT_SECONDS:
         raise InvalidConfigurationError()
-    return AIServiceConfiguration(api_key, model, base_url, timeout_seconds)
+    raw_reasoning_effort = values.get("OPENAI_REASONING", "").strip()
+    reasoning_effort: ReasoningEffort = None
+    if raw_reasoning_effort:
+        try:
+            reasoning_effort = Reasoning(effort=raw_reasoning_effort).effort
+        except (TypeError, ValueError) as error:
+            raise InvalidConfigurationError("invalid OPENAI_REASONING configuration") from error
+    return AIServiceConfiguration(api_key, model, base_url, timeout_seconds, reasoning_effort)
 
 
 def _system_instructions() -> str:
@@ -157,9 +169,16 @@ def _output_text(response: object) -> str:
     return output_text
 
 
-def _create_response(model_client: Any, **request: Any) -> object:
+def _create_response(
+    model_client: Any,
+    *,
+    reasoning_effort: ReasoningEffort = None,
+    **request: Any,
+) -> object:
     started_at = monotonic()
     try:
+        if reasoning_effort is not None:
+            request["reasoning"] = {"effort": reasoning_effort}
         return model_client.responses.create(**request)
     finally:
         record_timing("model_request", started_at)
@@ -184,6 +203,7 @@ def generate_reply(
     try:
         response = _create_response(
             model_client,
+            reasoning_effort=config.reasoning_effort,
             model=config.model,
             instructions=_system_instructions(),
             input=request_input,
@@ -203,6 +223,7 @@ def generate_reply(
         ]
         final_response = _create_response(
             model_client,
+            reasoning_effort=config.reasoning_effort,
             model=config.model,
             instructions=_system_instructions(),
             input=follow_up,

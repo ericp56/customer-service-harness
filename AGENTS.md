@@ -39,7 +39,9 @@ log store.
 - `src/ai_client.py` owns validated environment configuration and bounded async
   OpenAI-compatible clients. Each agent role receives a distinct client/model
   object. Model attempts have a maximum 10-second timeout, no automatic retries,
-  no server-side storage, and no agent tracing.
+  no server-side storage, and no agent tracing. Optional `OPENAI_REASONING`
+  accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; unset or
+  blank preserves provider defaults, while unknown values are invalid config.
 - `src/task_agents.py` defines the distinct conversation manager and task
   specialist, their fixed prompts, and strict structured results. The manager
   evaluates results and chooses completion, clarification, approval, or recovery.
@@ -60,6 +62,8 @@ log store.
 - `src/model_diagnostics.py` emits one content-free `model_call` line per model
   call (role, sequence, `duration_ms`, token counts, outcome, response shape)
   through SDK lifecycle hooks, tied to its task outcome by a random `task_id`.
+  Call lines include only the explicit task-state snapshot allowlist; one
+  `task_outcome` line records the final caller-turn status and safe snapshot.
 
 The successful submission path is: Gradio async event -> `begin_submission` ->
 bounded task runtime -> `complete_submission` -> rendered display messages.
@@ -80,11 +84,17 @@ and resumes on customer input. Provider/configuration failures go through
   and addresses are PII and must never be logged. The one exception is a
   validated digits-only account number, which may appear in the optional
   `account_number` diagnostic field. A random, content-independent `task_id`
-  (32 hex characters) and the fixed `model_call` fields may also appear; model
-  names, provider response IDs, and error text must not.
+  (32 hex characters), fixed `model_call` fields, and these derived metrics may
+  also appear: task status, active/remaining milliseconds, turn/capability/
+  completed-step counts, approval-pending, account/zip attempt counts,
+  account-verified, and session-ended flags. New progress/outcome records must
+  never include account or zip values, model names, provider response IDs, or
+  error text.
 - Diagnostics have fixed categories and allowlisted timing steps only:
   `model_request`, `date_time_tool`, and `chat_submission`. Preserve
-  non-negative integer `duration_ms` values.
+  non-negative integer `duration_ms` values. `model_call` and `task_outcome`
+  fields remain explicit allowlists; snapshots contain only fixed statuses,
+  non-negative integer metrics, and booleans.
 - Keep each model attempt bounded to 10 seconds with no automatic SDK retries.
   Bound active task work to 60 seconds and no more than eight manager turns
   per caller message.

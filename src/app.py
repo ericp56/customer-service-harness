@@ -145,6 +145,7 @@ def task_diagnostic_outcome(outcome: TaskOutcome) -> DiagnosticOutcome | None:
         TaskOutcome.CANCELED: DiagnosticOutcome.TASK_CANCELED,
         TaskOutcome.REJECTED: DiagnosticOutcome.TASK_REJECTED,
         TaskOutcome.TIMED_OUT: DiagnosticOutcome.TASK_TIMEOUT,
+        TaskOutcome.INVALID_CONFIGURATION: DiagnosticOutcome.INVALID_CONFIGURATION,
         TaskOutcome.DUPLICATE_CALL: DiagnosticOutcome.TASK_UNSUPPORTED_CAPABILITY,
         TaskOutcome.DUPLICATE_STEP: DiagnosticOutcome.TASK_UNSUPPORTED_CAPABILITY,
         TaskOutcome.CAPABILITY_LIMIT: DiagnosticOutcome.TASK_UNSUPPORTED_CAPABILITY,
@@ -264,10 +265,17 @@ async def task_send_event(
         result = task.result()
         if result.response.status == "failed" or result.response.status == "unsupported":
             failed = fail_submission(started.state)
+            diagnostic_outcome = task_diagnostic_outcome(result.outcome) or DiagnosticOutcome.TASK_FAILED
+            diagnostic_error = (
+                InvalidConfigurationError("invalid OPENAI_REASONING configuration")
+                if result.outcome is TaskOutcome.INVALID_CONFIGURATION
+                else None
+            )
             DIAGNOSTICS.record(
-                DiagnosticOutcome.TASK_FAILED,
+                diagnostic_outcome,
                 started_at=started_at,
                 task_id=result.task.task_id,
+                error=diagnostic_error,
             )
             role, text = task_status(result.task.status)
             yield _task_event_outputs(failed.state, result.task, content, role, text, retry_visible=True)

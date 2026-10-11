@@ -35,3 +35,41 @@
 ## Dependencies
 
 T002 blocks T005 and T010. T003 blocks T006 and T010. T005 blocks T006 and T008.
+
+## Phase 6: User Story 4 - Configure Reasoning Effort (P2)
+
+**Goal**: Let operators set a validated optional reasoning effort across agent and synchronous model requests.
+
+**Independent Test**: Recognized values are applied to every request, blank/unset values preserve provider defaults, and unknown values fail as fixed invalid configuration without sending a request.
+
+- [X] T014 [P] [US4] Add configuration and request-path tests for all SDK reasoning efforts, blank/unset/trimmed/invalid values, and tool follow-ups in `tests/unit/test_ai_client.py`.
+- [X] T015 [US4] Add the optional validated reasoning-effort configuration and apply it only when configured in `src/ai_client.py`.
+
+## Phase 7: User Story 5 - See Caller Task Progress (P1)
+
+**Goal**: Add explicit privacy-safe live task snapshots to model-call lines and one final snapshot per caller-message runtime outcome.
+
+**Independent Test**: Scripted tasks exercise success, nested capability work, clarification, approval, failure, timeout, cancellation, and early exits; each started call includes a safe snapshot and each invocation emits exactly one final outcome line.
+
+- [X] T016 [P] [US5] Test the typed progress snapshot schema, fixed field allowlist, validation failures, serialization failure isolation, and existing model-call compatibility in `tests/unit/test_observability.py`.
+- [X] T017 [P] [US5] Test live per-call progress, final outcomes, cancellation and early exits, concurrency/resume, timing semantics, and privacy sentinels in `tests/unit/test_model_diagnostics.py`.
+- [X] T018 [US5] Implement validated task snapshot and task-outcome JSON emitters plus optional snapshots on model-call records in `src/observability.py`.
+- [X] T019 [US5] Add snapshot callback support and observer-only manager-turn tracking to the call recorder/hooks in `src/model_diagnostics.py`.
+- [X] T020 [US5] Sample `TaskState` and the live tool ledger without mutation; emit exactly one final `task_outcome` for every `run_customer_task` return and cancellation in `src/task_runtime.py`.
+- [X] T021 [US5] Map invalid reasoning configuration to the fixed configuration diagnostic and preserve the task failure mapping in `src/app.py`.
+
+## Phase 8: Polish
+
+- [X] T022 [P] Update `README.md`, `AGENTS.md`, and `.github/copilot-instructions.md` with `OPENAI_REASONING` semantics and the approved safe task-diagnostic fields.
+- [X] T023 Run focused and full deterministic test suites and verify diagnostic overhead stays within the specified 5 ms per model call; record validation in this task list.
+
+Validation: focused feature tests passed (86 tests), final full suite passed (155 tests), and the average 100-record model-call emitter check remained below 5 ms per call.
+
+### New Task Dependencies
+
+- T014 blocks T015.
+- T016 blocks T018.
+- T017 blocks T019 and T020.
+- T018 and T019 block T020.
+- T015 blocks T021; T020 blocks T021.
+- T015 and T021 block T022. T015-T022 block T023.

@@ -220,6 +220,29 @@ def test_task_outcomes_map_to_fixed_diagnostic_categories() -> None:
     assert app.task_diagnostic_outcome(TaskOutcome.REJECTED) is DiagnosticOutcome.TASK_REJECTED
     assert app.task_diagnostic_outcome(TaskOutcome.TIMED_OUT) is DiagnosticOutcome.TASK_TIMEOUT
     assert app.task_diagnostic_outcome(TaskOutcome.DUPLICATE_CALL) is DiagnosticOutcome.TASK_UNSUPPORTED_CAPABILITY
+    assert app.task_diagnostic_outcome(TaskOutcome.INVALID_CONFIGURATION) is DiagnosticOutcome.INVALID_CONFIGURATION
+
+
+def test_task_invalid_configuration_emits_fixed_error_without_value(monkeypatch, run_async, capsys) -> None:
+    async def invalid_task(*_args, **_kwargs) -> TaskRunResult:
+        task = TaskState("secret request", TaskStatus.FAILED, 0.0, None)
+        return TaskRunResult(
+            task,
+            ConversationResponse(status="failed", message="Try again."),
+            TaskOutcome.INVALID_CONFIGURATION,
+        )
+
+    monkeypatch.setattr(app, "run_customer_task", invalid_task)
+
+    async def collect() -> None:
+        _ = [output async for output in app.task_send_event("private-effort-value", new_conversation(), None)]
+
+    run_async(collect())
+    payload = json.loads(capsys.readouterr().out.splitlines()[-1])
+
+    assert payload["level"] == "ERROR"
+    assert payload["message"] == "invalid OPENAI_REASONING configuration"
+    assert "private-effort-value" not in json.dumps(payload)
 
 
 def test_task_event_appends_generated_response_once(monkeypatch, run_async) -> None:

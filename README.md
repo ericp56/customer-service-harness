@@ -17,8 +17,12 @@ No real customer records,
 external business APIs, or write actions are enabled. Configure
 `OPENAI_API_KEY` and `OPENAI_MODEL` before starting; optional `OPENAI_BASE_URL`
 selects an OpenAI-compatible Responses service and `OPENAI_TIMEOUT_SECONDS`
-defaults to 10. Active tasks are limited to 60 seconds and progress updates are
-shown every five seconds while work is active.
+defaults to 10. Optional `OPENAI_REASONING` accepts `none`, `minimal`, `low`,
+`medium`, `high`, `xhigh`, or `max`; leave it unset or blank to use the provider
+default. Unknown values are rejected as invalid configuration. The operator is
+responsible for choosing an effort supported by the selected model. Active tasks
+are limited to 60 seconds and progress updates are shown every five seconds while
+work is active.
 
 Operational diagnostics are emitted as privacy-safe UTC JSON Lines on stdout for an external
 collector. The application does not retain logs; records never include chat content, credentials,
@@ -27,6 +31,13 @@ Only a validated account number may appear; zip codes and other PII never do.
 Each model call also emits one `model_call` line with the agent role, call sequence,
 `duration_ms`, token counts, outcome (`success`, `timeout`, `error`, `canceled`), and
 response shape, sharing a random `task_id` with the task's outcome line.
+Model-call records also include a fixed `task_state` snapshot with task status,
+active and remaining milliseconds, manager turns, capability/completed-step
+counts, approval state, verification attempt counts, and verification/session-
+ended flags. A `task_outcome` line records the same safe snapshot once for each
+caller-message task run, including clarification, approval, failure, timeout, and
+cancellation. These records never include account or zip values, task text,
+proposals, results, or capability identifiers.
 Timing records use fixed step names (`model_request`, `date_time_tool`, and `chat_submission`) and
 non-negative `duration_ms` values to identify slow blocking work without exposing request data.
 Agents SDK tracing and durable agent sessions are disabled.

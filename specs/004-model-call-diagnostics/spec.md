@@ -4,7 +4,7 @@
 
 **Created**: 2026-10-09
 
-**Status**: Draft
+**Status**: Implemented
 
 **Input**: User description: "stdout is very sparse and only shows when a task finishes. Log each model API response with its duration, tokens used, and response information."
 
@@ -53,6 +53,32 @@ As an operator, I can tie a task's model calls to its final outcome line, so I c
 2. **Given** a task continues across several caller messages, **When** lines are emitted, **Then** the identifier stays the same.
 3. **Given** two tasks, **When** lines are compared, **Then** their identifiers differ and are not derived from any message, account, or caller content.
 
+### User Story 4 - Configure Reasoning Effort (Priority: P2)
+
+As an operator, I can optionally configure the model reasoning effort so requests use the setting appropriate to the selected model.
+
+**Independent Test**: Configure each recognized effort and verify it is applied to all model requests; omit or blank the setting and verify provider defaults remain in effect; provide an unknown value and verify a fixed invalid-configuration diagnostic.
+
+**Acceptance Scenarios**:
+
+1. **Given** `OPENAI_REASONING` is unset or blank, **When** the application creates a model request, **Then** it omits reasoning effort and preserves the provider default.
+2. **Given** `OPENAI_REASONING` contains a recognized value, **When** either agent role or the synchronous request path calls the model, **Then** every request, including tool follow-ups, uses that effort.
+3. **Given** `OPENAI_REASONING` contains an unknown value, **When** configuration is loaded, **Then** the request is not sent and a content-free `invalid_configuration` diagnostic is emitted without the supplied value.
+4. **Given** a recognized effort is unsupported by the chosen model, **When** the provider rejects it, **Then** existing fixed failure handling is used without fallback or logging provider error text.
+
+### User Story 5 - See Caller Task Progress (Priority: P1)
+
+As an operator, I can read safe task-progress and final-outcome metrics alongside each model call, so I can understand how the caller's task is progressing and where it ended.
+
+**Independent Test**: Run deterministic tasks that complete, request clarification or approval, fail, time out, and are canceled; verify model-call snapshots and exactly one final caller-turn outcome record with safe state metrics.
+
+**Acceptance Scenarios**:
+
+1. **Given** a model call starts, **When** its response record is emitted, **Then** it includes a validated snapshot of status, active duration and remaining budget, manager-turn count, capability/completed-step counts, approval-pending flag, verification attempt counts, and verification/session-ended flags.
+2. **Given** an invoked capability changes task progress, **When** a later call or the caller-turn outcome is recorded, **Then** its snapshot reflects completed effects without exposing capability identifiers or results.
+3. **Given** a caller turn reaches any terminal or waiting state, **When** `run_customer_task` returns, **Then** exactly one `task_outcome` record reports its fixed status, duration, task id, and final safe snapshot, including on cancellation.
+4. **Given** task state contains prompts, replies, proposals, results, continuation context, account numbers, zip codes, call identifiers, or step identifiers, **When** diagnostics are emitted, **Then** none of those values appear in either record type.
+
 ### Edge Cases
 
 - The model service returns missing or partial usage data.
@@ -75,6 +101,12 @@ As an operator, I can tie a task's model calls to its final outcome line, so I c
 - **FR-007**: Emitting these lines MUST NOT change task behavior, ordering, timeouts, retries, or results, and a serialization failure MUST NOT fail the task.
 - **FR-008**: Normal automated tests MUST use deterministic fake model boundaries and MUST assert absence of sensitive content in the emitted lines.
 - **FR-009**: Existing diagnostic lines, their fields, and fixed categories MUST remain compatible, except that the final outcome line gains the optional task identifier.
+- **FR-010**: `OPENAI_REASONING` MUST accept only `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`, after trimming surrounding whitespace. An unset or blank value MUST omit the reasoning setting. Unknown values MUST produce the existing content-free invalid-configuration failure without including the value.
+- **FR-011**: A configured reasoning effort MUST be applied to both agent roles and every synchronous model request, including tool follow-ups. The application MUST NOT probe model compatibility, silently fall back, or expose provider error text.
+- **FR-012**: Every model-call line MUST include a typed, validated snapshot limited to task status, active duration, remaining active budget, manager-turn count, capability count, completed-step count, approval-pending flag, account and zip attempt counts, account-verified flag, and session-ended flag.
+- **FR-013**: Each `run_customer_task` caller-message invocation MUST emit exactly one `task_outcome` line with its fixed outcome, task identifier, response-ready duration, and final safe task snapshot, including early exits and cancellation.
+- **FR-014**: New progress and outcome lines MUST NOT include request or response content; proposals, continuation context, results, account values, zip values, capability/call/step identifiers, model/provider identifiers, URLs, credentials, or error text. Diagnostic failures MUST NOT alter task behavior.
+- **FR-015**: Progress snapshots MUST sample live in-process task/tool state without mutating task transitions. Elapsed active time MUST exclude time spent waiting for customer input and be clamped to the 60-second task budget.
 
 ### Key Entities *(include if feature involves data)*
 
@@ -90,6 +122,9 @@ As an operator, I can tie a task's model calls to its final outcome line, so I c
 - **SC-003**: In privacy tests, 100% of emitted lines contain no prompt, reply, tool argument, tool result, account number, zip code, error text, model name, or identifier from the model service.
 - **SC-004**: In concurrent-task tests, 100% of lines can be grouped to the correct task by identifier, and no two tasks share one.
 - **SC-005**: Emitting call lines adds no more than 5 ms of processing per call in tests and changes no task outcome.
+- **SC-006**: Across success, failure, clarification, approval, timeout, cancellation, and early-exit tests, each caller-message runtime invocation emits exactly one correlated `task_outcome` line and every started model call includes a progress snapshot.
+- **SC-007**: In 100% of privacy tests, new task-progress and task-outcome fields are limited to the specified allowlist; sentinel values placed in excluded state fields never appear in stdout.
+- **SC-008**: For all recognized effort values, both agent and synchronous request paths apply the configured value; unset/blank omits it, and unknown values emit invalid-configuration without sending a request.
 
 ## Assumptions
 
@@ -98,3 +133,7 @@ As an operator, I can tie a task's model calls to its final outcome line, so I c
 - Tool names on the fixed list are application-owned and safe to log; any other name is reported as `other`.
 - Tool-step lines, task-start lines, and aggregate metrics are out of scope for this release.
 - Duration covers the span from just before the model call to just after its response, including SDK overhead.
+- Reasoning values are case-sensitive after trimming; model-specific compatibility remains the operator's responsibility.
+- A model-call snapshot reflects state when the response returns, before tools requested in that response execute; subsequent call snapshots and final outcomes reflect those effects.
+- `task_outcome.duration_ms` measures wall time for the current caller-message invocation until its response is ready. `active_duration_ms` separately excludes clarification/approval wait time.
+- Approval or rejection button actions without a caller message do not create another `task_outcome` record.

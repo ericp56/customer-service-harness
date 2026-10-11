@@ -17,10 +17,12 @@ from src.ai_client import (
     build_agent_model,
     build_agent_run_config,
     create_async_client,
+    InvalidConfigurationError,
     load_configuration,
 )
 from src.chat import ChatMessage, ConversationItem
 from src.model_diagnostics import ModelCallHooks, ModelCallRecorder
+from src.observability import TaskProgressSnapshot, record_task_outcome
 from src.task_agents import ConversationResponse, TaskAgents, create_task_agents
 from src.tools import TASK_TOOLS, TaskToolLedger
 
@@ -63,6 +65,7 @@ class TaskOutcome(StrEnum):
     REJECTED = "rejected"
     TIMED_OUT = "timed_out"
     SESSION_ENDED = "session_ended"
+    INVALID_CONFIGURATION = "invalid_configuration"
     INVALID_TRANSITION = "invalid_transition"
 
 
@@ -337,6 +340,36 @@ def _merge_tool_ledger(state: TaskState, ledger: TaskToolLedger) -> TaskState:
     )
 
 
+def _task_progress_snapshot(
+    state: TaskState,
+    ledger: TaskToolLedger | None = None,
+    *,
+    turn_count: int | None = None,
+    now: float | None = None,
+) -> TaskProgressSnapshot:
+    current_time = monotonic() if now is None else now
+    active_seconds = state.active_seconds
+    if state.status is TaskStatus.ACTIVE and state.last_active_at is not None:
+        active_seconds += max(0.0, current_time - state.last_active_at)
+    active_ms = min(round(MAX_ACTIVE_SECONDS * 1000), max(0, round(active_seconds * 1000)))
+    caller = ledger.caller if ledger is not None else state.caller
+    capability_ids = ledger.capability_call_ids if ledger is not None else state.capability_call_ids
+    completed_ids = ledger.completed_step_ids if ledger is not None else state.completed_step_ids
+    return TaskProgressSnapshot(
+        task_status=state.status.value,
+        active_duration_ms=active_ms,
+        remaining_active_ms=max(0, round(MAX_ACTIVE_SECONDS * 1000) - active_ms),
+        turn_count=max(0, state.turn_count if turn_count is None else turn_count),
+        capability_count=len(capability_ids),
+        completed_step_count=len(completed_ids),
+        approval_pending=state.pending_proposal is not None,
+        account_attempts=caller.account_attempts,
+        zip_attempts=caller.zip_attempts,
+        account_verified=caller.verified_account is not None,
+        session_ended=caller.ended or state.status is TaskStatus.SESSION_ENDED,
+    )
+
+
 def _is_timeout_error(error: BaseException) -> bool:
     pending_errors = [error]
     seen: set[int] = set()
@@ -370,29 +403,47 @@ async def run_customer_task(
 ) -> TaskRunResult:
     """Run one bounded manager/specialist workflow without retaining provider errors."""
     started_at = monotonic()
+
+    def finish(
+        result: TaskRunResult,
+        ledger: TaskToolLedger | None = None,
+        turn_count: int | None = None,
+    ) -> TaskRunResult:
+        try:
+            snapshot = _task_progress_snapshot(result.task, ledger, turn_count=turn_count)
+            record_task_outcome(
+                task_id=result.task.task_id,
+                outcome=result.task.status.value,
+                started_at=started_at,
+                task_state=snapshot,
+            )
+        except Exception:
+            pass
+        return result
+
     if prior_task is None:
         task = replace(begin_task(pending_text, now=started_at), caller=caller or CallerSession())
     else:
         resumed = resume_task(prior_task, now=started_at)
         if resumed.outcome is not TaskOutcome.RESUMED:
             response = ConversationResponse(status="failed", message="This task took too long to finish. Please try again.")
-            return TaskRunResult(resumed.state, response, resumed.outcome)
+            return finish(TaskRunResult(resumed.state, response, resumed.outcome))
         # The manager-turn budget applies to each caller message, not cumulatively.
         task = replace(resumed.state, turn_count=0)
     if task.caller.ended:
         ended = end_session(task)
-        return TaskRunResult(
+        return finish(TaskRunResult(
             ended.state,
             ConversationResponse(status="session_ended", message=SESSION_ENDED_MESSAGE),
             TaskOutcome.SESSION_ENDED,
-        )
+        ))
     turn = begin_agent_turn(task)
     if turn.outcome is not TaskOutcome.TURN_STARTED:
-        return TaskRunResult(
+        return finish(TaskRunResult(
             turn.state,
             ConversationResponse(status="unsupported", message="I couldn't continue that task. Please try again."),
             turn.outcome,
-        )
+        ))
 
     owned_clients: list[Any] = []
     tool_ledger = TaskToolLedger(
@@ -405,12 +456,15 @@ async def run_customer_task(
     remaining_seconds = remaining_active_seconds(turn.state)
     if remaining_seconds <= 0:
         timed_out = replace(turn.state, status=TaskStatus.TIMED_OUT, last_active_at=None)
-        return TaskRunResult(
+        return finish(TaskRunResult(
             timed_out,
             ConversationResponse(status="failed", message="This task took too long to finish. Please try again."),
             TaskOutcome.TIMED_OUT,
-        )
-    recorder = ModelCallRecorder(turn.state.task_id)
+        ))
+    recorder = ModelCallRecorder(
+        turn.state.task_id,
+        lambda turns: _task_progress_snapshot(turn.state, tool_ledger, turn_count=turns),
+    )
     recording_token = recorder.activate()
     try:
         if agents is None:
@@ -444,22 +498,52 @@ async def run_customer_task(
             ),
             timeout=remaining_seconds,
         )
+    except asyncio.CancelledError:
+        recorder.fail("canceled")
+        elapsed = accrue_active_time(turn.state, now=monotonic())
+        canceled_state = replace(
+            _merge_tool_ledger(elapsed.state, tool_ledger),
+            status=TaskStatus.CANCELED,
+            last_active_at=None,
+        )
+        finish(
+            TaskRunResult(
+                canceled_state,
+                ConversationResponse(status="failed", message="I couldn't complete that task. Please try again."),
+                TaskOutcome.CANCELED,
+            ),
+            tool_ledger,
+            recorder.manager_turn_count,
+        )
+        raise
+    except InvalidConfigurationError:
+        recorder.fail("error")
+        failed = fail_task(_merge_tool_ledger(turn.state, tool_ledger))
+        return finish(
+            TaskRunResult(
+                failed.state,
+                ConversationResponse(status="failed", message="I couldn't complete that task. Please try again."),
+                TaskOutcome.INVALID_CONFIGURATION,
+            ),
+            tool_ledger,
+            recorder.manager_turn_count,
+        )
     except ModelTimeoutError:
         recorder.fail("timeout")
         elapsed = accrue_active_time(turn.state, now=monotonic())
         if elapsed.outcome is TaskOutcome.TIMED_OUT:
             timed_out = _merge_tool_ledger(elapsed.state, tool_ledger)
-            return TaskRunResult(
+            return finish(TaskRunResult(
                 timed_out,
                 ConversationResponse(status="failed", message="This task took too long to finish. Please try again."),
                 TaskOutcome.TIMED_OUT,
-            )
+            ), tool_ledger, recorder.manager_turn_count)
         failed = fail_task(_merge_tool_ledger(elapsed.state, tool_ledger))
-        return TaskRunResult(
+        return finish(TaskRunResult(
             failed.state,
             ConversationResponse(status="failed", message="I couldn't complete that task. Please try again."),
             TaskOutcome.FAILED,
-        )
+        ), tool_ledger, recorder.manager_turn_count)
     except Exception as error:
         recorder.fail("timeout" if _is_timeout_error(error) else "error")
         if _is_timeout_error(error):
@@ -470,25 +554,25 @@ async def run_customer_task(
                 turn_count=MAX_MANAGER_TURNS,
                 last_active_at=None,
             )
-            return TaskRunResult(
+            return finish(TaskRunResult(
                 timed_out,
                 ConversationResponse(status="failed", message="This task took too long to finish. Please try again."),
                 TaskOutcome.TIMED_OUT,
-            )
+            ), tool_ledger, recorder.manager_turn_count)
         elapsed = accrue_active_time(turn.state, now=monotonic())
         if elapsed.outcome is TaskOutcome.TIMED_OUT:
             timed_out = _merge_tool_ledger(elapsed.state, tool_ledger)
-            return TaskRunResult(
+            return finish(TaskRunResult(
                 timed_out,
                 ConversationResponse(status="failed", message="This task took too long to finish. Please try again."),
                 TaskOutcome.TIMED_OUT,
-            )
+            ), tool_ledger, recorder.manager_turn_count)
         failed = fail_task(_merge_tool_ledger(elapsed.state, tool_ledger))
-        return TaskRunResult(
+        return finish(TaskRunResult(
             failed.state,
             ConversationResponse(status="failed", message="I couldn't complete that task. Please try again."),
             TaskOutcome.FAILED,
-        )
+        ), tool_ledger, recorder.manager_turn_count)
     finally:
         recorder.fail("canceled")
         recorder.deactivate(recording_token)
@@ -500,11 +584,11 @@ async def run_customer_task(
 
     elapsed = accrue_active_time(turn.state, now=monotonic())
     if elapsed.outcome is TaskOutcome.TIMED_OUT:
-        return TaskRunResult(
+        return finish(TaskRunResult(
             _merge_tool_ledger(elapsed.state, tool_ledger),
             ConversationResponse(status="failed", message="This task took too long to finish. Please try again."),
             TaskOutcome.TIMED_OUT,
-        )
+        ), tool_ledger, recorder.manager_turn_count)
 
     manager_turn_count = min(MAX_MANAGER_TURNS, len(result.raw_responses))
     response = result.final_output
@@ -514,40 +598,40 @@ async def run_customer_task(
     )
     if tool_ledger.caller.ended:
         ended = end_session(elapsed_state)
-        return TaskRunResult(
+        return finish(TaskRunResult(
             ended.state,
             ConversationResponse(status="session_ended", message=SESSION_ENDED_MESSAGE),
             TaskOutcome.SESSION_ENDED,
-        )
+        ), tool_ledger, recorder.manager_turn_count)
     if not isinstance(response, ConversationResponse):
         failed = fail_task(elapsed_state)
-        return TaskRunResult(
+        return finish(TaskRunResult(
             failed.state,
             ConversationResponse(status="failed", message="I couldn't complete that task. Please try again."),
             TaskOutcome.FAILED,
-        )
+        ), tool_ledger, recorder.manager_turn_count)
 
     if response.status == "completed":
         completed = complete_task(elapsed_state)
-        return TaskRunResult(completed.state, response, completed.outcome)
+        return finish(TaskRunResult(completed.state, response, completed.outcome), tool_ledger, recorder.manager_turn_count)
     if response.status == "clarification_required":
         paused = pause_task(elapsed_state, TaskStatus.WAITING_FOR_CLARIFICATION, now=monotonic())
         continuation_context = paused.state.continuation_context
         if response.task_result is not None:
             continuation_context = (*continuation_context, response.task_result.model_dump_json())
         paused_state = replace(paused.state, continuation_context=continuation_context)
-        return TaskRunResult(paused_state, response, paused.outcome)
+        return finish(TaskRunResult(paused_state, response, paused.outcome), tool_ledger, recorder.manager_turn_count)
     if response.status == "approval_required":
         proposal = response.task_result.proposal if response.task_result is not None else None
         paused = request_simulated_approval(elapsed_state, proposal or "", now=monotonic())
         if paused.outcome is not TaskOutcome.PAUSED:
             failed = fail_task(paused.state)
-            return TaskRunResult(
+            return finish(TaskRunResult(
                 failed.state,
                 ConversationResponse(status="failed", message="I couldn't complete that task. Please try again."),
                 TaskOutcome.FAILED,
-            )
-        return TaskRunResult(paused.state, response, paused.outcome)
+            ), tool_ledger, recorder.manager_turn_count)
+        return finish(TaskRunResult(paused.state, response, paused.outcome), tool_ledger, recorder.manager_turn_count)
 
     failed = fail_task(elapsed_state)
-    return TaskRunResult(failed.state, response, TaskOutcome.FAILED)
+    return finish(TaskRunResult(failed.state, response, TaskOutcome.FAILED), tool_ledger, recorder.manager_turn_count)

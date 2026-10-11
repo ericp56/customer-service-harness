@@ -7,8 +7,9 @@ from contextlib import suppress
 from agents import Usage
 from agents.testing import ModelStep, ScriptedModel, assistant_message, function_call
 
+from src.accounts import CallerSession
 from src.task_agents import create_task_agents
-from src.task_runtime import TaskStatus, run_customer_task
+from src.task_runtime import TaskState, TaskStatus, _task_progress_snapshot, run_customer_task
 from src.tools import TASK_TOOLS
 
 _FINAL = (
@@ -23,14 +24,17 @@ _SPECIALIST_DONE = '{"status":"completed","summary":"Done.","question":null,"pro
 
 
 def _lines(capsys) -> list[dict]:
+    return [record for record in _records(capsys) if record.get("component") == "model_call"]
+
+
+def _records(capsys) -> list[dict]:
     found = []
     for raw in capsys.readouterr().out.splitlines():
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError:
             continue
-        if payload.get("component") == "model_call":
-            found.append(payload)
+        found.append(payload)
     return found
 
 
@@ -97,6 +101,92 @@ def test_one_line_per_model_call_with_role_sequence_tokens_and_shape(run_async, 
     assert {line["task_id"] for line in lines} == {result.task.task_id}
 
 
+def test_call_snapshots_show_live_capability_progress_and_one_final_outcome(run_async, capsys) -> None:
+    agents = _delegating_agents("getCurrentDateTimeIso", {}, _FINAL % "It is noon.")
+
+    result = run_async(run_customer_task("What time is it?", (), agents=agents))
+    records = _records(capsys)
+    calls = [record for record in records if record["component"] == "model_call"]
+    [outcome] = [record for record in records if record["component"] == "task_outcome"]
+    snapshots = [call["task_state"] for call in calls]
+
+    assert [snapshot["turn_count"] for snapshot in snapshots] == [1, 1, 1, 2]
+    assert [snapshot["capability_count"] for snapshot in snapshots] == [0, 0, 1, 1]
+    assert [snapshot["completed_step_count"] for snapshot in snapshots] == [0, 0, 1, 1]
+    assert all(snapshot["task_status"] == "active" for snapshot in snapshots)
+    assert all(snapshot["active_duration_ms"] >= 0 for snapshot in snapshots)
+    assert all(0 <= snapshot["remaining_active_ms"] <= 60_000 for snapshot in snapshots)
+    assert outcome["outcome"] == "completed"
+    assert outcome["task_state"]["completed_step_count"] == 1
+    assert outcome["task_id"] == result.task.task_id == calls[0]["task_id"]
+    assert sum(record["component"] == "task_outcome" for record in records) == 1
+
+
+def test_waiting_and_early_exit_outcomes_are_logged_once(run_async, capsys) -> None:
+    clarified = run_async(run_customer_task("start", (), agents=_single_reply_agents(_CLARIFY % "More?")))
+    clarification_records = _records(capsys)
+    [clarification] = [record for record in clarification_records if record["component"] == "task_outcome"]
+    assert clarification["outcome"] == "waiting_for_clarification"
+    assert clarification["task_state"]["task_status"] == "waiting_for_clarification"
+
+    approval_reply = (
+        '{"status":"approval_required","message":"Review the change.",'
+        '"task_result":{"status":"approval_required","summary":"Ready.",'
+        '"question":null,"proposal":"PRIVATE-PROPOSAL"}}'
+    )
+    approved_wait = run_async(
+        run_customer_task(
+            "PRIVATE-REQUEST PRIVATE-ZIP-999",
+            (),
+            agents=_single_reply_agents(approval_reply),
+            caller=CallerSession(
+                current_account="PRIVATE-ACCOUNT",
+                account_attempts=2,
+                zip_attempts=1,
+                verified_account="PRIVATE-ACCOUNT",
+            ),
+        )
+    )
+    approval_records = _records(capsys)
+    [approval] = [record for record in approval_records if record["component"] == "task_outcome"]
+    assert approval["outcome"] == "waiting_for_approval"
+    assert approval["task_state"]["approval_pending"] is True
+    assert approval["task_state"]["account_attempts"] == 2
+    assert approval["task_state"]["zip_attempts"] == 1
+    assert approval["task_state"]["account_verified"] is True
+    for secret in ("PRIVATE-REQUEST", "PRIVATE-ZIP-999", "PRIVATE-ACCOUNT", "PRIVATE-PROPOSAL"):
+        assert secret not in json.dumps(approval_records)
+
+    ended = run_async(
+        run_customer_task(
+            "not logged",
+            (),
+            caller=CallerSession(current_account="123", account_attempts=3, zip_attempts=2, ended=True),
+        )
+    )
+    ended_records = _records(capsys)
+    [session_ended] = [record for record in ended_records if record["component"] == "task_outcome"]
+    assert session_ended["outcome"] == "session_ended"
+    assert session_ended["task_state"]["session_ended"] is True
+    assert session_ended["task_state"]["account_attempts"] == 3
+    assert session_ended["task_state"]["zip_attempts"] == 2
+    assert not [record for record in ended_records if record["component"] == "model_call"]
+    assert clarified.task.task_id == clarification["task_id"]
+    assert approved_wait.task.task_id == approval["task_id"]
+    assert ended.task.task_id == session_ended["task_id"]
+
+
+def test_task_progress_snapshot_excludes_customer_wait_from_active_time() -> None:
+    active = TaskState("private", TaskStatus.ACTIVE, 12.0, 50.0)
+    waiting = TaskState("private", TaskStatus.WAITING_FOR_CLARIFICATION, 12.0, None)
+
+    live = _task_progress_snapshot(active, now=53.0)
+    paused = _task_progress_snapshot(waiting, now=500.0)
+
+    assert (live.active_duration_ms, live.remaining_active_ms) == (15_000, 45_000)
+    assert (paused.active_duration_ms, paused.remaining_active_ms) == (12_000, 48_000)
+
+
 def test_missing_usage_is_reported_as_zero_with_a_flag(run_async, capsys) -> None:
     run_async(run_customer_task("hello", (), agents=_single_reply_agents(_FINAL % "Hi.")))
 
@@ -130,7 +220,7 @@ def test_lines_never_contain_prompts_replies_arguments_or_caller_values(run_asyn
     agents = _delegating_agents("account_lookup", {"account_number": "123"}, _CLARIFY % "SECRET-REPLY zip?")
 
     run_async(run_customer_task("SECRET-PROMPT 98765", (), agents=agents))
-    output = json.dumps(_lines(capsys))
+    output = json.dumps(_records(capsys))
 
     for sensitive in ("SECRET-PROMPT", "SECRET-REPLY", "98765", "123", "12345", "Do it.", "t-1", "d-1"):
         assert sensitive not in output
@@ -149,12 +239,15 @@ def test_failed_call_records_error_outcome_without_error_text(run_async, capsys)
     )
 
     run_async(run_customer_task("hello", (), agents=agents))
-    [line] = _lines(capsys)
+    records = _records(capsys)
+    [line] = [record for record in records if record["component"] == "model_call"]
+    [outcome] = [record for record in records if record["component"] == "task_outcome"]
 
     assert line["outcome"] == "error"
     assert line["level"] == "ERROR"
     assert "secret provider detail" not in json.dumps(line)
     assert "input_tokens" not in line
+    assert outcome["outcome"] == "failed"
 
 
 def test_timed_out_call_records_timeout_outcome(run_async, capsys) -> None:
@@ -169,10 +262,13 @@ def test_timed_out_call_records_timeout_outcome(run_async, capsys) -> None:
     )
 
     result = run_async(run_customer_task("hello", (), agents=agents))
-    [line] = _lines(capsys)
+    records = _records(capsys)
+    [line] = [record for record in records if record["component"] == "model_call"]
+    [outcome] = [record for record in records if record["component"] == "task_outcome"]
 
     assert line["outcome"] == "timeout"
     assert result.task.status is TaskStatus.TIMED_OUT
+    assert outcome["outcome"] == "timed_out"
 
 
 def test_canceled_call_records_canceled_outcome(run_async, capsys) -> None:
@@ -194,9 +290,30 @@ def test_canceled_call_records_canceled_outcome(run_async, capsys) -> None:
             await task
 
     run_async(scenario())
-    [line] = _lines(capsys)
+    records = _records(capsys)
+    [line] = [record for record in records if record["component"] == "model_call"]
+    [outcome] = [record for record in records if record["component"] == "task_outcome"]
 
     assert line["outcome"] == "canceled"
+    assert outcome["outcome"] == "canceled"
+
+
+def test_invalid_configuration_has_fixed_task_outcome(run_async, capsys, monkeypatch) -> None:
+    from src.ai_client import InvalidConfigurationError
+
+    def invalid_configuration():
+        raise InvalidConfigurationError()
+
+    monkeypatch.setattr("src.task_runtime.load_configuration", invalid_configuration)
+
+    result = run_async(run_customer_task("private request", ()))
+    records = _records(capsys)
+    [outcome] = [record for record in records if record["component"] == "task_outcome"]
+
+    assert result.outcome.name == "INVALID_CONFIGURATION"
+    assert outcome["outcome"] == "failed"
+    assert "private request" not in json.dumps(records)
+    assert not [record for record in records if record["component"] == "model_call"]
 
 
 def test_concurrent_tasks_have_distinct_ids_and_separate_sequences(run_async, capsys) -> None:

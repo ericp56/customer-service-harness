@@ -1,6 +1,24 @@
 import json
 
-from src.observability import DiagnosticOutcome, Diagnostics
+from src.observability import DiagnosticOutcome, Diagnostics, TaskProgressSnapshot
+
+
+def _task_snapshot(**overrides) -> TaskProgressSnapshot:
+    values = {
+        "task_status": "active",
+        "active_duration_ms": 250,
+        "remaining_active_ms": 59_750,
+        "turn_count": 2,
+        "capability_count": 1,
+        "completed_step_count": 1,
+        "approval_pending": False,
+        "account_attempts": 1,
+        "zip_attempts": 0,
+        "account_verified": False,
+        "session_ended": False,
+    }
+    values.update(overrides)
+    return TaskProgressSnapshot(**values)
 
 
 def test_records_utc_json_line_to_stdout(capsys) -> None:
@@ -88,6 +106,113 @@ def test_failed_model_call_line_has_no_usage_or_content_fields(capsys) -> None:
     assert payload["outcome"] == "timeout"
     assert "input_tokens" not in payload
     assert "tool" not in payload
+
+
+def test_model_call_snapshot_is_nested_and_allowlisted(capsys) -> None:
+    from src.observability import record_model_call
+
+    snapshot = _task_snapshot()
+    record_model_call(
+        task_id="e" * 32,
+        agent="conversation",
+        call_index=1,
+        outcome="success",
+        started_at=0,
+        task_state=snapshot,
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["task_state"] == {
+        "task_status": "active",
+        "active_duration_ms": 250,
+        "remaining_active_ms": 59_750,
+        "turn_count": 2,
+        "capability_count": 1,
+        "completed_step_count": 1,
+        "approval_pending": False,
+        "account_attempts": 1,
+        "zip_attempts": 0,
+        "account_verified": False,
+        "session_ended": False,
+    }
+    assert payload["task_id"] == "e" * 32
+
+
+def test_task_outcome_line_has_fixed_fields_and_final_snapshot(capsys) -> None:
+    from src.observability import record_task_outcome
+
+    record_task_outcome(
+        task_id="f" * 32,
+        outcome="waiting_for_approval",
+        started_at=0,
+        task_state=_task_snapshot(task_status="waiting_for_approval", approval_pending=True),
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert set(payload) == {
+        "timestamp", "component", "level", "message", "step", "duration_ms",
+        "task_id", "outcome", "task_state",
+    }
+    assert payload["component"] == "task_outcome"
+    assert payload["step"] == "chat_submission"
+    assert payload["outcome"] == "waiting_for_approval"
+    assert payload["task_state"]["approval_pending"] is True
+
+
+def test_task_snapshot_rejects_invalid_status_counts_and_boolean_types() -> None:
+    import pytest
+
+    for override in (
+        {"task_status": "secret"},
+        {"turn_count": -1},
+        {"active_duration_ms": True},
+        {"approval_pending": 1},
+    ):
+        with pytest.raises(ValueError):
+            _task_snapshot(**override)
+
+
+def test_task_outcome_serialization_failure_is_content_free_and_nonfatal(monkeypatch, capsys) -> None:
+    from src import observability
+
+    def fail_serialization(*_args, **_kwargs):
+        raise TypeError("PRIVATE-TEXT")
+
+    monkeypatch.setattr(observability.json, "dumps", fail_serialization)
+    observability.record_task_outcome(
+        task_id="a" * 32,
+        outcome="completed",
+        started_at=0,
+        task_state=_task_snapshot(task_status="completed"),
+    )
+
+    assert capsys.readouterr().out == "diagnostic serialization failed\n"
+
+
+def test_model_call_diagnostic_overhead_is_below_five_milliseconds(capsys) -> None:
+    from time import perf_counter
+
+    from src.observability import record_model_call
+
+    snapshot = _task_snapshot()
+    started = perf_counter()
+    for call_index in range(100):
+        record_model_call(
+            task_id="b" * 32,
+            agent="conversation",
+            call_index=call_index + 1,
+            outcome="success",
+            started_at=started,
+            input_tokens=10,
+            output_tokens=5,
+            total_tokens=15,
+            usage_reported=True,
+            task_state=snapshot,
+        )
+    average_seconds = (perf_counter() - started) / 100
+
+    assert average_seconds < 0.005
+    assert len(capsys.readouterr().out.splitlines()) == 100
 
 
 def test_model_call_rejects_unsupported_values() -> None:

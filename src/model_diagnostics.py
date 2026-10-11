@@ -5,11 +5,11 @@ from __future__ import annotations
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from time import monotonic
-from typing import Any
+from typing import Any, Callable
 
 from agents import RunHooks
 
-from src.observability import record_model_call
+from src.observability import TaskProgressSnapshot, record_model_call
 from src.tools import TASK_TOOLS
 
 _KNOWN_TOOLS = frozenset({tool.name for tool in TASK_TOOLS} | {"delegate_to_task_agent"})
@@ -29,10 +29,20 @@ def _count(value: object) -> int:
 class ModelCallRecorder:
     """Tracks the single in-flight model call of one run and emits one line per call."""
 
-    def __init__(self, task_id: str) -> None:
+    def __init__(
+        self,
+        task_id: str,
+        task_snapshot: Callable[[int], TaskProgressSnapshot] | None = None,
+    ) -> None:
         self.task_id = task_id
+        self._task_snapshot = task_snapshot
         self._calls = 0
+        self._manager_turn_count = 0
         self._open: _OpenCall | None = None
+
+    @property
+    def manager_turn_count(self) -> int:
+        return self._manager_turn_count
 
     def activate(self) -> Token[ModelCallRecorder | None]:
         return _current.set(self)
@@ -42,6 +52,8 @@ class ModelCallRecorder:
 
     def start(self, agent: str) -> None:
         self._calls += 1
+        if agent == "conversation":
+            self._manager_turn_count += 1
         self._open = _OpenCall(agent, self._calls, monotonic())
 
     def succeed(self, response: Any) -> None:
@@ -87,12 +99,19 @@ class ModelCallRecorder:
     def _emit(self, call: _OpenCall, outcome: str, **fields: Any) -> None:
         # Diagnostics must never change task behavior.
         try:
+            task_state = None
+            if self._task_snapshot is not None:
+                try:
+                    task_state = self._task_snapshot(self._manager_turn_count)
+                except Exception:
+                    pass
             record_model_call(
                 task_id=self.task_id,
                 agent=call.agent,
                 call_index=call.index,
                 outcome=outcome,
                 started_at=call.started_at,
+                task_state=task_state,
                 **fields,
             )
         except Exception:
