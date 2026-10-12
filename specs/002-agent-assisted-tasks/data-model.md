@@ -1,5 +1,10 @@
 # Data Model: Agent-Assisted Customer Tasks
 
+**Current public UI supersession**: The original progress-status presentation below
+is historical. Feature 005's 2026-10-12 refinement makes progress and actionable
+validation/capacity feedback display-only assistant chat entries; see the
+[current conversation contract](../../005-async-conversation/contracts/conversation-events.md).
+
 All entities below are transient and server-owned unless described as customer-visible display text. No task, agent context, approval, tool result, or checkpoint is persisted or placed in browser storage.
 
 ## CustomerConversation

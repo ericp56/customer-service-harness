@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 import re
 from enum import StrEnum
 from typing import Any, Literal
+from time import monotonic
 
 from agents import function_tool
 from agents.tool_context import ToolContext
@@ -65,6 +68,58 @@ class TaskProgress:
         self.task_name = None
 
 
+class RevisionRequested(BaseException):
+    """Discard an obsolete SDK continuation without converting it to tool output."""
+
+
+@dataclass
+class ExecutionControl:
+    checkpoint: Callable[[TaskToolLedger, str], Awaitable[None]]
+    revision: int = 0
+    base_seconds: float = 0.0
+    started_at: float = field(default_factory=monotonic)
+    paused_at: float | None = None
+    paused_seconds: float = 0.0
+    timeout: asyncio.Timeout | None = None
+    manager_turns: int = 0
+    reconciling: bool = False
+    agents: Any = None
+    state: Any = None
+    change_action: str | None = None
+    owned_clients: list[Any] = field(default_factory=list)
+    admitted_route: Any = None
+    pending_route: Any = None
+    recorder: Any = None
+    generation: int = 0
+
+    @property
+    def active_seconds(self) -> float:
+        end = self.paused_at if self.paused_at is not None else monotonic()
+        return self.base_seconds + max(0.0, end - self.started_at - self.paused_seconds)
+
+    def pause(self) -> None:
+        if self.paused_at is None:
+            self.paused_at = monotonic()
+        if self.timeout is not None:
+            self.timeout.reschedule(None)
+
+    def resume(self) -> None:
+        if self.paused_at is not None:
+            self.paused_seconds += max(0.0, monotonic() - self.paused_at)
+            self.paused_at = None
+        if self.timeout is not None:
+            self.timeout.reschedule(asyncio.get_running_loop().time() + max(0.0, 60.0 - self.active_seconds))
+
+    async def run(self, work: Awaitable[Any]) -> Any:
+        async with asyncio.timeout(None) as timeout:
+            self.timeout = timeout
+            self.resume()
+            try:
+                return await work
+            finally:
+                self.timeout = None
+
+
 @dataclass
 class TaskToolLedger:
     capability_call_ids: list[str] = field(default_factory=list)
@@ -78,6 +133,11 @@ class TaskToolLedger:
     detail_kind: Literal["none", "account_number", "zip_code"] = "none"
     facts: CatalogFacts = field(default_factory=CatalogFacts)
     policy_violated: bool = False
+    control: ExecutionControl | None = None
+
+    async def checkpoint(self, boundary: str) -> None:
+        if self.control is not None and not self.control.reconciling:
+            await self.control.checkpoint(self, boundary)
 
     def authorize(self, tool_name: str, value: str | None = None) -> None:
         allowed = allowed_capabilities(self.task_name)
@@ -92,7 +152,7 @@ class TaskToolLedger:
                 and self.caller.current_account is not None and self.caller.verified_account is None
             )
         elif tool_name == "getSupportContact":
-            valid = valid and self.caller.verified_account is not None and self.facts.contact is None
+            valid = valid and self.caller.verified_account is not None and self.caller.verified_account == self.caller.current_account and self.facts.contact is None
         if value is not None:
             valid = valid and bool(value.strip()) and (
                 value == self.caller_input.strip()
@@ -134,13 +194,17 @@ def get_current_datetime_iso() -> str:
     description_override="Get the current date and time as an ISO 8601 UTC timestamp.",
     strict_mode=True,
 )
-def current_datetime_tool(ctx: ToolContext[TaskToolLedger]) -> str:
+async def current_datetime_tool(ctx: ToolContext[TaskToolLedger]) -> str:
+    await ctx.context.checkpoint("dispatch")
     ctx.context.authorize(TOOL_NAME)
     step_id = f"current-date-time-{len(ctx.context.capability_call_ids) + 1}"
+    if ctx.context.control is not None:
+        step_id = f"r{ctx.context.control.revision}-{step_id}"
     ctx.context.claim(ctx.tool_call_id, step_id)
     result = get_current_datetime_iso()
     ctx.context.facts = replace(ctx.context.facts, timestamp=result)
     ctx.context.complete(step_id, result)
+    await ctx.context.checkpoint("committed")
     return result
 
 
@@ -176,6 +240,8 @@ _ZIP_RESULTS = {
 
 def _next_step_id(ctx: ToolContext[TaskToolLedger], prefix: str) -> str:
     step_id = f"{prefix}-{len(ctx.context.capability_call_ids) + 1}"
+    if ctx.context.control is not None:
+        step_id = f"r{ctx.context.control.revision}-{step_id}"
     ctx.context.claim(ctx.tool_call_id, step_id)
     return step_id
 
@@ -185,13 +251,15 @@ def _next_step_id(ctx: ToolContext[TaskToolLedger], prefix: str) -> str:
     description_override="Check whether an account number exists. Never reveals account details.",
     strict_mode=True,
 )
-def account_lookup_tool(ctx: ToolContext[TaskToolLedger], account_number: str) -> str:
+async def account_lookup_tool(ctx: ToolContext[TaskToolLedger], account_number: str) -> str:
+    await ctx.context.checkpoint("dispatch")
     ctx.context.authorize("account_lookup", account_number)
     step_id = _next_step_id(ctx, "account-lookup")
     ctx.context.caller, outcome = lookup_account(ctx.context.caller, account_number)
     ctx.context.facts = replace(ctx.context.facts, lookup=outcome)
     result = _LOOKUP_RESULTS[outcome]
     ctx.context.complete(step_id, result)
+    await ctx.context.checkpoint("committed")
     return result
 
 
@@ -200,13 +268,15 @@ def account_lookup_tool(ctx: ToolContext[TaskToolLedger], account_number: str) -
     description_override="Check the caller's zip code against the account they gave. Never reveals the stored zip code.",
     strict_mode=True,
 )
-def verify_account_zip_tool(ctx: ToolContext[TaskToolLedger], zip_code: str) -> str:
+async def verify_account_zip_tool(ctx: ToolContext[TaskToolLedger], zip_code: str) -> str:
+    await ctx.context.checkpoint("dispatch")
     ctx.context.authorize("verify_account_zip", zip_code)
     step_id = _next_step_id(ctx, "verify-zip")
     ctx.context.caller, outcome = verify_zip(ctx.context.caller, zip_code)
     ctx.context.facts = replace(ctx.context.facts, zip_check=outcome)
     result = _ZIP_RESULTS[outcome]
     ctx.context.complete(step_id, result)
+    await ctx.context.checkpoint("committed")
     return result
 
 
@@ -215,7 +285,8 @@ def verify_account_zip_tool(ctx: ToolContext[TaskToolLedger], zip_code: str) -> 
     description_override="Get the customer support contact for the verified account.",
     strict_mode=True,
 )
-def support_contact_tool(ctx: ToolContext[TaskToolLedger]) -> str:
+async def support_contact_tool(ctx: ToolContext[TaskToolLedger]) -> str:
+    await ctx.context.checkpoint("dispatch")
     ctx.context.authorize("getSupportContact")
     step_id = _next_step_id(ctx, "support-contact")
     contact = support_contact(ctx.context.caller)
@@ -226,6 +297,7 @@ def support_contact_tool(ctx: ToolContext[TaskToolLedger]) -> str:
         else "The account is not verified. Retrieve the customer account first."
     )
     ctx.context.complete(step_id, result)
+    await ctx.context.checkpoint("committed")
     return result
 
 

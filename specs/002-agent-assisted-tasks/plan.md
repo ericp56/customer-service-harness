@@ -4,9 +4,14 @@
 
 **Input**: Feature specification from `/specs/002-agent-assisted-tasks/spec.md`
 
+**Current public UI supersession**: The separate accessible progress status-area
+decision below is historical. Feature 005's 2026-10-12 refinement publishes fixed
+progress and validation/capacity notices as transcript entries; see its
+[conversation contract](../../005-async-conversation/contracts/conversation-events.md).
+
 ## Summary
 
-Add a bounded multi-agent task workflow to the existing transient customer chat. Use the OpenAI Agents SDK with the configured OpenAI-compatible provider: a conversation manager delegates bounded work to a task specialist, evaluates the result, and either asks the customer for input, resolves a simulated approval, or returns a final answer. Adapt the current synchronous Gradio callback to a queued asynchronous generator that emits separate accessible progress statuses, supports cancellation, and keeps task state in server-side in-memory session state. Disable agent tracing and all persistent SDK sessions so user, model, tool, and approval data remain transient and do not enter SDK telemetry or browser storage.
+Add a bounded multi-agent task workflow to the existing transient customer chat. Use the OpenAI Agents SDK with the configured OpenAI-compatible provider: a conversation manager delegates bounded work to a task specialist, evaluates the result, and either asks the customer for input, resolves a simulated approval, or returns a final answer. The original implementation adapted the synchronous Gradio callback to queued asynchronous work and rendered progress in a separate status area; that presentation is superseded by feature 005's transcript notices. Keep task state in server-side in-memory session state and disable agent tracing and persistent SDK sessions so user, model, tool, and approval data remain transient and do not enter SDK telemetry or browser storage.
 
 ## Technical Context
 

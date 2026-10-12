@@ -1,5 +1,12 @@
 # Customer Task Chat Contract
 
+Feature 005 supersedes alternating submission and pair-limit rules for the public
+application. See [conversation events](../../005-async-conversation/contracts/conversation-events.md).
+Feature 005's 2026-10-12 async-notice refinement supersedes this contract's separate
+status-area presentation: progress and actionable fixed notices are assistant chat
+entries, are excluded from model context, and count toward the 100-entry bound.
+Approval helpers remain internal harness behavior under feature 003's catalog boundary.
+
 ## Scope
 
 This is a UI/event contract on the existing Gradio chat page. It adds no public HTTP endpoint. All chat, task, checkpoint, and approval data stays transient and server-side.
@@ -9,7 +16,7 @@ This is a UI/event contract on the existing Gradio chat page. It adds no public 
 | Event | Visible behavior | Conversation history |
 |---|---|---|
 | Accepted request | Existing user message appears once; task begins. | User message only until a final assistant answer. |
-| Progress | Accessible concise status appears at five-second active-work intervals and reflects the latest known active phase. It uses fixed application copy and may include an exact validated catalog task name; unknown activity uses the existing fallback rotation. Normal responsive delivery target is within one additional second. | Not added as an assistant message. |
+| Progress | Accessible concise fixed assistant chat message is initially published and then sampled at five-second active-work intervals only when displayed wording changes. It may include an exact validated catalog task name; unknown activity uses fixed generic copy. No caller reply is required. Optional progress is suppressed from 90 assistant entries. | Counted within the 100-assistant-entry limit; excluded from model context and diagnostics. |
 | Clarification | Assistant asks one clear question and pauses active work. | Customer-facing question is a dialogue message; no progress status while waiting. |
 | Approval proposal | Assistant describes the simulated consequential action and shows explicit approve/reject/cancel controls. | Customer-facing proposal is dialogue; no action runs before approval. |
 | Approval/rejection | Decision applies only to the server-owned pending action and is consumed once. | Final/result dialogue follows the task outcome. |
@@ -18,13 +25,16 @@ This is a UI/event contract on the existing Gradio chat page. It adds no public 
 
 ## Input and State Rules
 
-- Preserve existing blank and 4,096-code-point input validation and 50-pair limit.
-- Only one task may be active per conversation; duplicate submissions during active work are rejected with accessible status.
+- Preserve blank and 4,096-code-point input validation. Feature 005 bounds the
+	public conversation to 50 accepted caller messages and 100 assistant entries.
+- One worker is active per conversation; distinct input can arrive while it works.
+	The inbox holds 10 pending messages; rapid duplicate Send/Enter is deduplicated.
+	Correction/cancel/switch requires versioned Yes/No confirmation after step commit.
 - Capability requests must match a strict server-owned schema and allowlist; accept at most one invocation per model turn, eight conversation-manager turns per task, and four specialist turns per delegation.
 - Progress timing and terminal UI state are owned by the application; no model-provided text is used as a status update.
-- Progress timing and terminal UI state are owned by the application; no model-provided text is used as a status update.
 - Progress activity is transient to the current runtime invocation. It is updated only from actual application/SDK lifecycle events; capability identifiers are mapped to generic fixed customer-facing copy.
-- The existing initial status and two-message fallback rotation remain unchanged. A validated task title may be shown only when available; missing task identity is never inferred from caller text.
+- Validation, capacity and fixed recovery feedback appear as accessible assistant chat entries; rejected caller input remains in the textbox. Do not add a separate visible status component or redundant status echo after a substantive assistant message.
+- A validated task title may be shown only when available; missing task identity is never inferred from caller text. Display-only progress/notice entries are excluded from model context and diagnostic payloads.
 - Model/task checkpoints are opaque server-side session state. They are never sent to the browser, logged, placed in URLs, or accepted from the client.
 - Accepted capability call IDs, completed step IDs, bounded step results, and structured specialist findings are retained only in server-side transient task state. On clarification or recoverable retry, the manager receives prior findings plus the new customer input; those findings are not inserted into chat history or diagnostics.
 - Customer clarification and approval are new UI events. While waiting, the task active-time clock is paused. Resume only if the remaining active-time budget is positive.

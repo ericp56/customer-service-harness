@@ -56,6 +56,8 @@ def catalog_reply(
         return "completed", f"The current time is {timestamp:%H:%M:%S} Greenwich Mean Time."
     if task_name not in (TaskName.CUSTOMER_ACCOUNT, TaskName.CUSTOMER_SERVICE):
         return "failed", SAFE_FAILURE
+    if caller.verified_account is not None and caller.verified_account != caller.current_account:
+        return "failed", SAFE_FAILURE
     if caller.verified_account is not None:
         if task_name is TaskName.CUSTOMER_ACCOUNT:
             return "completed", "Your account is verified."

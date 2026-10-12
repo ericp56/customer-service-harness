@@ -42,6 +42,14 @@ def is_account_number(value: str) -> bool:
     return _ACCOUNT_PATTERN.fullmatch(value) is not None
 
 
+def correct_account(session: CallerSession, account_number: str) -> CallerSession:
+    if session.ended or account_number == session.current_account:
+        return session
+    if not is_account_number(account_number):
+        raise ValueError("invalid account correction")
+    return replace(session, current_account=None, verified_account=None)
+
+
 def lookup_account(session: CallerSession, account_number: str) -> tuple[CallerSession, LookupResult]:
     if session.ended:
         return session, LookupResult.SESSION_ENDED
@@ -54,7 +62,7 @@ def lookup_account(session: CallerSession, account_number: str) -> tuple[CallerS
         )
     if candidate == session.current_account:
         return session, LookupResult.FOUND
-    return replace(session, current_account=candidate, zip_attempts=0), LookupResult.FOUND
+    return replace(session, current_account=candidate, zip_attempts=0, verified_account=None), LookupResult.FOUND
 
 
 def verify_zip(session: CallerSession, zip_code: str) -> tuple[CallerSession, ZipResult]:
@@ -72,7 +80,7 @@ def verify_zip(session: CallerSession, zip_code: str) -> tuple[CallerSession, Zi
 
 
 def support_contact(session: CallerSession) -> str | None:
-    if session.ended or session.verified_account is None:
+    if session.ended or session.verified_account is None or session.verified_account != session.current_account:
         return None
     if ACCOUNTS[session.verified_account] == PHONE_SUPPORT_ZIP:
         return PHONE_SUPPORT_CONTACT

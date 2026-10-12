@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import socket
 import threading
 import time
 from urllib.request import urlopen
@@ -46,18 +47,22 @@ def browser_runtime_available(browser) -> None:
 
 @pytest.fixture(scope="session")
 def echo_url(browser_runtime_available: None) -> str:
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(128)
+    port = listener.getsockname()[1]
     server = uvicorn.Server(
         uvicorn.Config(
             app.create_server(),
             host="127.0.0.1",
-            port=7860,
+            port=port,
             access_log=False,
             log_level="critical",
         )
     )
-    thread = threading.Thread(target=server.run, daemon=True)
+    thread = threading.Thread(target=server.run, kwargs={"sockets": [listener]}, daemon=True)
     thread.start()
-    url = "http://127.0.0.1:7860"
+    url = f"http://127.0.0.1:{port}"
     for _ in range(50):
         try:
             with urlopen(f"{url}/healthz", timeout=0.2) as response:
@@ -74,6 +79,7 @@ def echo_url(browser_runtime_available: None) -> str:
 
     server.should_exit = True
     thread.join(timeout=5)
+    listener.close()
 
 
 def submit(page, text: str) -> None:
@@ -102,9 +108,10 @@ def test_accessible_validation_and_recovery(page, echo_url: str) -> None:
 
     submit(page, " \t")
 
-    status = page.locator("#echo-status [role='alert']")
-    expect(status).to_contain_text("non-whitespace")
-    expect(page.locator("#echo-conversation [role='log']")).to_have_text("")
+    conversation = page.locator("#echo-conversation [role='log']")
+    expect(conversation).to_contain_text("non-whitespace")
+    expect(page.locator("#echo-status")).to_have_count(0)
+    expect(page.locator("#echo-message textarea")).to_have_value(" \t")
 
 
 def test_keyboard_retry_recovers_a_declared_operational_failure(page, echo_url: str, monkeypatch) -> None:
@@ -126,7 +133,7 @@ def test_keyboard_retry_recovers_a_declared_operational_failure(page, echo_url: 
 
     monkeypatch.setattr(app, "run_customer_task", fail)
     submit(page, "retry this")
-    expect(page.locator("#echo-status [role='alert']")).to_contain_text("You can try again")
+    expect(page.locator("#echo-conversation [role='log']")).to_contain_text("You can try again")
     retry = page.locator("#echo-retry")
     expect(retry).to_be_visible()
 
@@ -180,8 +187,9 @@ def test_cancel_stops_active_task_without_partial_reply(page, echo_url: str, mon
     expect(cancel).to_be_visible()
     cancel.click()
 
-    expect(page.locator("#echo-status [role='status']")).to_contain_text("Task canceled.")
-    expect(page.locator("#echo-message textarea")).to_have_value("cancel this task")
+    expect(page.locator("#echo-conversation [role='log']")).to_contain_text("Task canceled.")
+    expect(page.locator("#echo-message textarea")).to_have_value("")
+    expect(page.locator("#echo-conversation")).to_contain_text("cancel this task")
     expect(page.locator("#echo-conversation [role='log']")).not_to_contain_text("Should not appear.")
 
 
@@ -244,6 +252,7 @@ def test_clarification_resumes_existing_task(page, echo_url: str, monkeypatch) -
         prior_task=None,
         caller=None,
         progress=None,
+        control=None,
     ) -> TaskRunResult:
         assert progress is not None
         nonlocal calls
@@ -275,7 +284,7 @@ def test_clarification_resumes_existing_task(page, echo_url: str, monkeypatch) -
     assert calls == 2
 
 
-def test_progress_updates_after_five_seconds_outside_chat(page, echo_url: str, monkeypatch) -> None:
+def test_progress_updates_as_accessible_chat_messages(page, echo_url: str, monkeypatch) -> None:
     page.goto(echo_url)
 
     async def slow_task(text: str, _history: tuple, **kwargs) -> TaskRunResult:
@@ -283,24 +292,24 @@ def test_progress_updates_after_five_seconds_outside_chat(page, echo_url: str, m
         progress.set(TaskActivity.LOOKING_UP_INFORMATION)
         await asyncio.sleep(5.2)
         progress.set(TaskActivity.EVALUATING_RESULT, TaskName.CURRENT_TIME)
-        await asyncio.sleep(5.2)
-        task = TaskState(text, TaskStatus.COMPLETED, 10.4, None)
+        await asyncio.sleep(6.0)
+        task = TaskState(text, TaskStatus.COMPLETED, 11.2, None)
         response = ConversationResponse(status="completed", message="Synthetic result.")
         return TaskRunResult(task, response, TaskOutcome.COMPLETED)
 
     monkeypatch.setattr(app, "run_customer_task", slow_task)
     started_at = time.monotonic()
     submit(page, "slow supported lookup")
-    status = page.locator("#echo-status [role='status']")
+    conversation = page.locator("#echo-conversation [role='log']")
 
-    expect(status).to_contain_text("I'm working on that now.")
-    expect(status).to_contain_text("I'm looking up information.", timeout=6000)
+    expect(conversation).to_contain_text("I'm working on that now.")
+    expect(conversation).to_contain_text("I'm looking up information.", timeout=6000)
     assert 5.0 <= time.monotonic() - started_at <= 6.0
-    expect(status).to_contain_text(
+    expect(conversation).to_contain_text(
         "I'm evaluating the result for: Retrieve the current time.", timeout=6000
     )
-    expect(page.locator("#echo-conversation")).not_to_contain_text("I'm looking up information.")
-    expect(page.locator("#echo-conversation")).to_contain_text("Synthetic result.")
+    expect(conversation).to_contain_text("I'm looking up information.")
+    expect(conversation).to_contain_text("Synthetic result.")
 
 
 def test_task_timeout_keeps_input_for_safe_retry(page, echo_url: str, monkeypatch) -> None:
@@ -314,6 +323,8 @@ def test_task_timeout_keeps_input_for_safe_retry(page, echo_url: str, monkeypatc
     monkeypatch.setattr(app, "run_customer_task", timed_out)
     submit(page, "time out safely")
 
-    expect(page.locator("#echo-status [role='alert']")).to_contain_text("too long to finish")
-    expect(page.locator("#echo-message textarea")).to_have_value("time out safely")
-    expect(page.locator("#echo-retry")).to_be_visible()
+    expect(page.locator("#echo-conversation [role='log']")).to_contain_text("too long to finish")
+    expect(page.locator("#echo-message textarea")).to_have_value("")
+    expect(page.locator("#echo-conversation")).to_contain_text("time out safely")
+    expect(page.locator("#echo-retry")).not_to_be_visible()
+    expect(page.locator("#echo-new-conversation")).to_be_visible()

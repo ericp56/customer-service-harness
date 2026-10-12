@@ -3,6 +3,11 @@
 A prototype, privacy-safe AI customer-service chat. Visitors can ask for bounded
 tasks handled by a conversation assistant and a task specialist, with progress,
 clarification and cancellation controls in one transient conversation.
+Send remains available while work runs. Caller messages appear in receipt order;
+answers and questions arrive independently. A correction, conversational cancel,
+or catalog switch finishes the current capability and requires Yes/No confirmation
+before further work. No continues from committed facts without repeating a lookup;
+a newer correction replaces the proposal and needs fresh confirmation.
 The public application executes only the three tasks in its catalog; approval
 helpers remain internal harness examples, not public catalog work.
 
@@ -22,8 +27,9 @@ defaults to 10. Optional `OPENAI_REASONING` accepts `none`, `minimal`, `low`,
 `medium`, `high`, `xhigh`, or `max`; leave it unset or blank to use the provider
 default. Unknown values are rejected as invalid configuration. The operator is
 responsible for choosing an effort supported by the selected model. Active tasks
-are limited to 60 seconds and progress updates are shown every five seconds while
-work is active. Progress copy reflects the latest known activity, such as looking
+are limited to 60 seconds. Fixed progress messages appear in chat initially and
+then at five-second samples only when wording changes while work is active. Progress
+copy reflects the latest known activity, such as looking
 up information or evaluating a result, without naming capabilities. It may include
 an exact catalog task title only when validated; otherwise the existing fixed
 fallback messages are used.
@@ -38,7 +44,18 @@ prose from becoming service results. Admission shares the existing conversation
 client and counts toward the eight-manager-turn and sixty-second active budgets.
 Separable mixed requests complete catalog work and decline the unrelated part.
 Diversions preserve paused verification and do not consume account/zip attempts;
-starting another task while one is paused requires finishing or canceling it.
+starting another catalog task requires confirming the switch. Compatible early
+details can advance without confirmation, but ZIP details cannot cross account
+identity revisions. Confirmed identity changes invalidate old verification and
+support-contact facts without refunding completed failed attempts.
+Each message is limited to 4,096 Unicode code points, each conversation to 50
+accepted caller messages and 100 assistant entries, and the pending inbox to 10.
+Rejected/full input is retained. Retry references the accepted input without
+duplicating history or completed capabilities. Exhausted budgets require reset.
+One server-side worker per session gates dispatch and publication; one 250ms
+subscriber renders changes without modifying the textbox. Confirmation waits
+pause active time. Hard Cancel stops immediately; reset, unload and session expiry
+invalidate late results and clear transient state. Capacity is 50 active sessions.
 Retired synchronous app callbacks fail closed without calling a provider.
 Natural-language admission is probabilistic; the deterministic capability/output
 boundary reduces impact but does not claim complete prompt-injection immunity.
@@ -54,7 +71,7 @@ Model-call records also include a fixed `task_state` snapshot with task status,
 active and remaining milliseconds, manager turns, capability/completed-step
 counts, approval state, verification attempt counts, and verification/session-
 ended flags. A `task_outcome` line records the same safe snapshot once for each
-caller-message task run, including clarification, approval, failure, timeout, and
+caller-processing batch or lifecycle decision, including clarification, failure, timeout, and
 cancellation. These records never include account or zip values, task text,
 proposals, results, or capability identifiers.
 Catalog completions include `task_name` with the exact catalog title, such as
@@ -110,6 +127,9 @@ not a Python dependency. The original [AI integration quickstart](specs/001-ai-c
 documents the provider configuration and date/time capability baseline.
 The [catalog boundary quickstart](specs/003-caller-service-tasks/quickstart.md)
 covers fixed refusals, permitted task execution and verification continuation.
+The [async conversation validation guide](specs/005-async-conversation/quickstart.md)
+records blocked-tool desktop/mobile checks, Yes/No/replacement/switch coverage,
+session cleanup, measured coordinator capacity and remaining release gates.
 Normal tests use scripted model/tool boundaries; optional real-provider red-team
 checks are a separate deployment validation and never require content logging.
 
@@ -122,6 +142,7 @@ checks are a separate deployment validation and never require content logging.
 | `load/` | k6 release-candidate load scenario |
 | `specs/001-ai-chat-integration/` | Feature specification, architecture plan, tasks, contracts, and validation guide |
 | `specs/002-agent-assisted-tasks/` | Agent-task specification, architecture, task model, UI contract, and validation guide |
+| `specs/005-async-conversation/` | Interruptible ingress, confirmation, lifecycle, compatibility and validation contracts |
 | `.specify/` | Spec Kit project configuration and constitution |
 
 ## Contributing with Spec Kit

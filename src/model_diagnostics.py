@@ -44,6 +44,9 @@ class ModelCallRecorder:
     def manager_turn_count(self) -> int:
         return self._manager_turn_count
 
+    def update_snapshot(self, snapshot: Callable[[int], TaskProgressSnapshot]) -> None:
+        self._task_snapshot = snapshot
+
     def activate(self) -> Token[ModelCallRecorder | None]:
         return _current.set(self)
 

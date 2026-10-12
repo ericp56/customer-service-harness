@@ -38,9 +38,79 @@ from src.task_runtime import (
     run_customer_task,
 )
 from src.tools import TaskActivity, TaskProgress
+from src.conversation_runtime import SessionCoordinator, dispose_session
 
 DIAGNOSTICS = Diagnostics()
 StatusRole = Literal["status", "alert"]
+INGRESS_JS = """(content, state) => {
+    const input = document.querySelector('#echo-message textarea');
+    if (input && input.value === content) {
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+        setter.call(input, '');
+        input.dispatchEvent(new Event('input', {bubbles: true}));
+    }
+    return [content, state];
+}"""
+
+
+def initial_session() -> SessionCoordinator:
+    return SessionCoordinator()
+
+
+async def conversation_send_event(content: str, session: SessionCoordinator) -> str:
+    return "" if await session.accept(content) else content
+
+
+async def conversation_ingress_event(content: str, session: SessionCoordinator) -> tuple[object, SessionCoordinator]:
+    return gr.skip() if await session.accept(content) else content, session
+
+
+async def conversation_render_event(session: SessionCoordinator) -> tuple[object, ...]:
+    async with session.render_update(progress_status) as changed:
+        active = session.worker is not None and not session.worker.done()
+        if not changed:
+            return tuple(gr.skip() for _ in range(7))
+        ended = session.disposed or (session.task is not None and session.task.caller.ended)
+        approval = session.task is not None and session.task.status is TaskStatus.WAITING_FOR_APPROVAL
+        paused = session.task is not None and session.task.status in (TaskStatus.WAITING_FOR_CLARIFICATION, TaskStatus.WAITING_FOR_APPROVAL)
+        retryable = session.retry_input is not None and session.task is not None and session.task.status is TaskStatus.FAILED
+        return (
+            [{"role": item.role, "content": escape(item.content, quote=False)} for item in session.dialogue.history],
+            gr.Button(interactive=not ended and not session.dialogue.caller_limit and not approval),
+            gr.Button(visible=retryable and not ended, interactive=retryable and not active),
+            gr.Button(visible=bool(session.dialogue.inputs) or ended),
+            gr.Button(visible=active or paused, interactive=active or paused),
+            gr.Button(visible=approval, interactive=approval),
+            gr.Button(visible=approval, interactive=approval),
+        )
+
+
+async def conversation_retry_event(session: SessionCoordinator) -> SessionCoordinator:
+    await session.retry()
+    return session
+
+
+async def conversation_cancel_event(session: SessionCoordinator) -> SessionCoordinator:
+    await session.cancel()
+    return session
+
+
+async def conversation_reset_event(session: SessionCoordinator) -> tuple[str, SessionCoordinator]:
+    await session.reset()
+    return "", session
+
+
+async def conversation_approval_event(session: SessionCoordinator, approved: bool) -> SessionCoordinator:
+    await session.resolve_approval(approved)
+    return session
+
+
+async def conversation_approve_event(session: SessionCoordinator) -> SessionCoordinator:
+    return await conversation_approval_event(session, True)
+
+
+async def conversation_reject_event(session: SessionCoordinator) -> SessionCoordinator:
+    return await conversation_approval_event(session, False)
 
 
 @dataclass(frozen=True)
@@ -546,18 +616,14 @@ def build_app() -> gr.Blocks:
             line_breaks=True,
             elem_id="echo-conversation",
         )
-        state = gr.State(value=initial_state())
-        task_state = gr.State(value=None)
+        state = gr.State(value=initial_session, time_to_live=300, delete_callback=dispose_session)
+        subscriber = gr.Timer(0.25)
         message = gr.Textbox(
             label="Message",
             lines=3,
             placeholder="Enter a message",
             autofocus=True,
             elem_id="echo-message",
-        )
-        status = gr.HTML(
-            value=_status_markup("status", "Ready to send a message."),
-            elem_id="echo-status",
         )
         with gr.Row():
             send = gr.Button("Send", variant="primary", elem_id="echo-send")
@@ -571,69 +637,87 @@ def build_app() -> gr.Blocks:
             approve = gr.Button("Approve Action", visible=False, elem_id="echo-approve-task")
             reject = gr.Button("Reject Action", visible=False, elem_id="echo-reject-task")
 
-        outputs = [conversation, message, state, task_state, status, send, retry, reset, cancel, approve, reject]
-        send_task = send.click(
-            task_send_event,
-            inputs=[message, state, task_state],
-            outputs=outputs,
-            concurrency_limit=50,
-            concurrency_id="echo-submission",
-            trigger_mode="once",
+        subscriber.tick(
+            conversation_render_event,
+            inputs=[state],
+            outputs=[conversation, send, retry, reset, cancel, approve, reject],
+            queue=False,
+            trigger_mode="always_last",
+            concurrency_limit=1,
+            api_name="subscribe",
+            api_visibility="private",
+            show_progress="hidden",
+        )
+        send.click(
+            conversation_ingress_event,
+            inputs=[message, state],
+            outputs=[message, state],
+            js=INGRESS_JS,
+            queue=False,
+            trigger_mode="multiple",
             api_name="submit",
             api_visibility="undocumented",
         )
-        submit_task = message.submit(
-            task_send_event,
-            inputs=[message, state, task_state],
-            outputs=outputs,
-            concurrency_limit=50,
-            concurrency_id="echo-submission",
-            trigger_mode="once",
+        message.submit(
+            conversation_ingress_event,
+            inputs=[message, state],
+            outputs=[message, state],
+            js=INGRESS_JS,
+            queue=False,
+            trigger_mode="multiple",
             api_name="submit-on-enter",
             api_visibility="undocumented",
         )
         retry.click(
-            retry_task_event,
-            inputs=[state, task_state],
-            outputs=outputs,
-            concurrency_limit=50,
-            concurrency_id="echo-submission",
+            conversation_retry_event,
+            inputs=[state],
+            outputs=[state],
+            queue=False,
             trigger_mode="once",
             api_name="retry",
             api_visibility="undocumented",
         )
         reset.click(
-            reset_task_event,
-            outputs=outputs,
+            conversation_reset_event,
+            inputs=[state],
+            outputs=[message, state],
             queue=False,
             api_name="new-conversation",
             api_visibility="undocumented",
         )
         cancel.click(
-            cancel_task_event,
-            inputs=[state, task_state],
-            outputs=outputs,
+            conversation_cancel_event,
+            inputs=[state],
+            outputs=[state],
             queue=False,
-            cancels=[send_task, submit_task],
             api_name="cancel-task",
             api_visibility="undocumented",
         )
         approve.click(
-            approve_task_event,
-            inputs=[state, task_state],
-            outputs=outputs,
+            conversation_approve_event,
+            inputs=[state],
+            outputs=[state],
             queue=False,
             api_name="approve-task",
             api_visibility="undocumented",
         )
         reject.click(
-            reject_task_event,
-            inputs=[state, task_state],
-            outputs=outputs,
+            conversation_reject_event,
+            inputs=[state],
+            outputs=[state],
             queue=False,
             api_name="reject-task",
             api_visibility="undocumented",
         )
+
+        async def unload_session(request: gr.Request) -> None:
+            current = demo.state_holder.session_data.get(request.session_hash)
+            if current is not None:
+                session = current.state_data.get(state._id)
+                if isinstance(session, SessionCoordinator):
+                    await session.close()
+
+        demo.unload(unload_session)
     return demo.queue(default_concurrency_limit=50, max_size=100, api_open=False)
 
 

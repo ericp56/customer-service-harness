@@ -1,5 +1,10 @@
 # Research: Agent-Assisted Customer Tasks
 
+**Current public UI supersession**: The separate status-area decision below records
+the original feature-002 design. Feature 005's 2026-10-12 refinement now publishes
+fixed progress and validation/capacity notices as chat entries; see the
+[current conversation contract](../../005-async-conversation/contracts/conversation-events.md).
+
 **Date**: 2026-10-04
 
 ## Decisions

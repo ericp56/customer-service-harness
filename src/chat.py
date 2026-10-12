@@ -2,12 +2,24 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Literal, TypeAlias
 
 MAX_MESSAGE_LENGTH = 4_096
 MAX_COMPLETED_PAIRS = 50
+MAX_CALLER_MESSAGES = 50
+MAX_ASSISTANT_MESSAGES = 100
+
+
+class MessageKind(StrEnum):
+    INFORMATION = "information"
+    QUESTION = "question"
+    CONFIRMATION = "confirmation"
+    COMPLETION = "completion"
+    RECOVERY = "recovery"
+    NOTICE = "notice"
+    PROGRESS = "progress"
 
 
 class SubmissionState(StrEnum):
@@ -32,6 +44,60 @@ class Outcome(StrEnum):
 class ChatMessage:
     role: Literal["user", "assistant"]
     content: str
+    sequence: int = 0
+    revision: int = 0
+    kind: MessageKind = MessageKind.INFORMATION
+
+    @property
+    def needs_response(self) -> bool:
+        return self.kind in (MessageKind.QUESTION, MessageKind.CONFIRMATION)
+
+    @property
+    def model_visible(self) -> bool:
+        return self.kind not in (MessageKind.NOTICE, MessageKind.PROGRESS)
+
+
+@dataclass(frozen=True)
+class CallerInput:
+    sequence: int
+    content: str
+    revision: int
+    proposal_version: int | None = None
+
+
+@dataclass(frozen=True)
+class Dialogue:
+    history: tuple[ChatMessage, ...] = ()
+    inputs: tuple[CallerInput, ...] = ()
+    sequence: int = 0
+    revision: int = 0
+    generation: int = 0
+
+    @property
+    def caller_limit(self) -> bool:
+        return len(self.inputs) >= MAX_CALLER_MESSAGES
+
+    @property
+    def assistant_count(self) -> int:
+        return sum(item.role == "assistant" for item in self.history)
+
+
+def accept_caller(state: Dialogue, content: str, proposal_version: int | None = None) -> tuple[Dialogue, CallerInput]:
+    if state.caller_limit or validate_submission(content) is not None:
+        raise ValueError("input not accepted")
+    sequence = state.sequence + 1
+    event = CallerInput(sequence, content, state.revision + 1, proposal_version)
+    message = ChatMessage("user", content, sequence, event.revision)
+    return replace(state, history=(*state.history, message), inputs=(*state.inputs, event), sequence=sequence, revision=event.revision), event
+
+
+def publish_assistant(state: Dialogue, content: str, kind: MessageKind, *, revision: int) -> Dialogue:
+    limit = MAX_ASSISTANT_MESSAGES if kind is MessageKind.RECOVERY else MAX_ASSISTANT_MESSAGES - 1
+    if state.assistant_count >= limit:
+        raise ValueError("assistant limit reached")
+    sequence = state.sequence + 1
+    message = ChatMessage("assistant", content, sequence, revision, kind)
+    return replace(state, history=(*state.history, message), sequence=sequence)
 
 
 @dataclass(frozen=True)

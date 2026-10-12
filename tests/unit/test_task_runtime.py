@@ -34,6 +34,38 @@ from src.observability import TaskName
 from src.tools import TASK_TOOLS, TaskActivity, TaskProgress
 
 
+def test_execution_control_excludes_confirmation_wait_and_preserves_budget(monkeypatch, run_async) -> None:
+    from src import tools
+    from src.tools import ExecutionControl
+
+    clock = [10.0]
+    monkeypatch.setattr(tools, "monotonic", lambda: clock[0])
+
+    async def scenario():
+        async def checkpoint(ledger, boundary):
+            return None
+
+        control = ExecutionControl(checkpoint, started_at=10.0, base_seconds=50.0)
+        clock[0] = 12.0
+        assert control.active_seconds == 52.0
+
+        async def work():
+            control.pause()
+            assert control.timeout.when() is None
+            clock[0] = 300.0
+            assert control.active_seconds == 52.0
+            control.resume()
+            remaining = control.timeout.when() - asyncio.get_running_loop().time()
+            assert 7.9 < remaining <= 8.0
+            clock[0] = 303.0
+            assert control.active_seconds == 55.0
+
+        await control.run(work())
+        assert control.timeout is None
+
+    run_async(scenario())
+
+
 def test_active_work_budget_pauses_while_waiting_for_customer() -> None:
     task = begin_task("synthetic lookup", now=10.0)
     task = accrue_active_time(task, now=22.0).state
@@ -88,6 +120,23 @@ def test_clarification_context_is_carried_in_resume_input() -> None:
     assert resumed_input[1]["role"] == "assistant"
     assert "specialist found weekday hours" in resumed_input[1]["content"]
     assert resumed_input[-1] == {"role": "user", "content": "Weekdays"}
+
+
+def test_model_context_excludes_display_only_chat_notices() -> None:
+    from src.chat import MessageKind
+
+    history = (
+        ChatMessage("assistant", "I'm working on that now.", kind=MessageKind.PROGRESS),
+        ChatMessage("assistant", "Try sending that again.", kind=MessageKind.NOTICE),
+        ChatMessage("assistant", "I can help with the current time.", kind=MessageKind.INFORMATION),
+    )
+
+    context = _conversation_input(history, "What time is it?")
+
+    assert context == [
+        {"role": "assistant", "content": "I can help with the current time."},
+        {"role": "user", "content": "What time is it?"},
+    ]
 
 
 def test_monotonic_clock_regression_does_not_rewind_active_marker() -> None:

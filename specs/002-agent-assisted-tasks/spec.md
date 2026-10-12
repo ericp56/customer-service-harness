@@ -1,5 +1,14 @@
 # Feature Specification: Agent-Assisted Customer Tasks
 
+**Current public UI supersession**: Feature 005's 2026-10-12 async-notice refinement
+replaces the separate progress/status area with fixed accessible assistant chat
+entries. See [the current conversation contract](../005-async-conversation/contracts/conversation-events.md).
+
+**Async Interaction Update (2026-10-11)**: Feature 005 supersedes alternating
+submission and the 50-pair interpretation for the public application with ordered
+caller events, bounded inbox and versioned confirmation. Legacy lifecycle helper
+tests remain valid. See [feature 005](../005-async-conversation/spec.md).
+
 **Catalog Scope Update (2026-10-11)**: Feature 003's catalog-only refinement supersedes generic service-information and simulated approval examples for the public application. This feature's pure lifecycle/harness behavior remains independently tested; public submissions execute only catalog tasks and use fixed refusals for unrelated work. See [the catalog boundary contract](../003-caller-service-tasks/contracts/catalog-boundary.md).
 
 **Feature Branch**: `002-agent-assisted-tasks`
@@ -95,7 +104,7 @@ As a customer, I can stop work or recover from a failure without losing the conv
 - **FR-004**: The system MUST ask the customer for clarification when required information is missing and MUST wait for the customer's response before continuing.
 - **FR-005**: The system MUST schedule progress at five-second intervals while work continues and the system is not waiting for customer input. Each update MUST reflect the latest known active-work phase at the time of the tick. Under normal service responsiveness, each update MUST be visible no later than one second after its scheduled interval.
 - **FR-006**: Progress and customer-facing task responses MUST NOT disclose internal reasoning, agent instructions, prompts, provider details, capability identifiers or arguments, or orchestration implementation details. Progress MUST use fixed application copy and MAY include only a catalog task name validated against the fixed catalog enum; if activity or name is unknown, it MUST use generic fixed copy or the existing fallback messages.
-- **FR-007**: Progress MUST stop while waiting for customer input and upon task completion, failure, timeout, or cancellation. Progress status MUST be accessible and MUST NOT be recorded as customer/assistant task dialogue.
+- **FR-007**: Progress MUST stop while waiting for customer input and upon task completion, failure, timeout, or cancellation. For the current public UI, progress is fixed accessible assistant chat content, counts toward the bounded transcript, and is excluded from model context and diagnostics; no separate visible status area is used.
 - **FR-008**: The initial capability set MUST retain the current date/time capability and permit only deterministic synthetic customer-service lookups. Real database access, external service integrations, and real-world write actions are out of scope for this release.
 - **FR-009**: The system MUST require explicit customer approval before any consequential action is performed. The initial release MUST use a simulated consequential action with no real-world side effect to exercise proposal, approval, rejection, and cancellation outcomes.
 - **FR-010**: The system MUST NOT perform a proposed consequential action before approval, and MUST NOT perform it after rejection or cancellation.
@@ -116,7 +125,7 @@ As a customer, I can stop work or recover from a failure without losing the conv
 - **Task Step**: A proposed piece of work and its outcome, limited to an approved capability.
 - **Clarification Request**: A customer-facing question that pauses task processing until answered.
 - **Action Approval**: A proposal and the customer's explicit approve, reject, or cancel decision.
-- **Progress Status**: A temporary, accessible indication that active work continues; it is not a conversation message.
+- **Progress Notice**: Fixed, accessible, display-only assistant chat content indicating active work; it requires no customer reply and is excluded from model context and diagnostics.
 - **Task Result**: The final customer-facing outcome or safe failure/recovery status.
 
 ## Success Criteria *(mandatory)*
@@ -124,12 +133,12 @@ As a customer, I can stop work or recover from a failure without losing the conv
 ### Measurable Outcomes
 
 - **SC-001**: For 20 supported synthetic lookup requests, 100% produce a relevant final response or a clear recoverable failure without invoking an unapproved capability.
-- **SC-002**: Under normal service responsiveness, every five-second progress interval for active work produces a visible status within one additional second; 100% of tested wait and terminal states stop periodic updates.
+- **SC-002**: Under normal service responsiveness, each sampled five-second progress interval with changed display wording produces an accessible chat entry within one additional second; 100% of tested wait and terminal states stop periodic updates and optional progress stops at 90 assistant entries.
 - **SC-003**: 100% of tested consequential-action scenarios perform no action before explicit approval, and rejection or cancellation produces no simulated action result.
 - **SC-004**: 100% of active task runs complete or reach a safe terminal status at or before 60 seconds of active processing.
 - **SC-005**: In cancellation, timeout, and tool-failure tests, 100% preserve prior conversation and report whether a consequential action already completed without duplicating completed steps on retry.
 - **SC-006**: In privacy tests, 100% of diagnostics and browser-storage checks contain no customer messages, model outputs, tool outputs, approval details, prompts, provider payloads, or credentials.
-- **SC-007**: At least 9 of 10 representative customers can distinguish a temporary progress status from a final answer and identify the next action when clarification, approval, or recovery is required.
+- **SC-007**: At least 9 of 10 representative customers can distinguish a temporary progress chat message from a final answer and identify the next action when clarification, approval, or recovery is required.
 - **SC-008**: 100% of tests that exceed the eight-manager-turn or four-specialist-turn limit, or submit malformed, duplicate-call-identifier, replayed-completed-step, or unapproved capability calls stop without executing the offending action and show a clear recovery outcome.
 
 ## Assumptions

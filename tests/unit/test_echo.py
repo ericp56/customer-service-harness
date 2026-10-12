@@ -12,6 +12,47 @@ from src.chat import (
     new_conversation,
     validate_submission,
 )
+import pytest
+
+
+def test_async_dialogue_has_independent_ordered_limits_and_recovery_reserve() -> None:
+    from src.chat import Dialogue, MessageKind, accept_caller, publish_assistant
+
+    dialogue = Dialogue()
+    dialogue, first = accept_caller(dialogue, "original")
+    dialogue, second = accept_caller(dialogue, "correction")
+    assert [message.role for message in dialogue.history] == ["user", "user"]
+    assert second.sequence > first.sequence and second.revision > first.revision
+    for number in range(48):
+        dialogue, _ = accept_caller(dialogue, str(number))
+    assert dialogue.caller_limit
+    with pytest.raises(ValueError):
+        accept_caller(dialogue, "too many")
+    for number in range(99):
+        dialogue = publish_assistant(dialogue, str(number), MessageKind.INFORMATION, revision=dialogue.revision)
+    with pytest.raises(ValueError):
+        publish_assistant(dialogue, "no reserve", MessageKind.QUESTION, revision=dialogue.revision)
+    dialogue = publish_assistant(dialogue, "Start a new conversation.", MessageKind.RECOVERY, revision=dialogue.revision)
+    assert dialogue.assistant_count == 100
+    assert not dialogue.history[-1].needs_response
+
+
+def test_display_only_notices_count_toward_assistant_limit() -> None:
+    from src.chat import ChatMessage, Dialogue, MessageKind, publish_assistant
+
+    progress = ChatMessage("assistant", "Working.", kind=MessageKind.PROGRESS)
+    notice = ChatMessage("assistant", "Try again.", kind=MessageKind.NOTICE)
+    assert not progress.model_visible and not progress.needs_response
+    assert not notice.model_visible and not notice.needs_response
+
+    dialogue = Dialogue()
+    for kind in (MessageKind.PROGRESS, MessageKind.NOTICE, *([MessageKind.INFORMATION] * 97)):
+        dialogue = publish_assistant(dialogue, "Fixed message.", kind, revision=0)
+    assert dialogue.assistant_count == 99
+    with pytest.raises(ValueError):
+        publish_assistant(dialogue, "Another progress update.", MessageKind.PROGRESS, revision=0)
+    dialogue = publish_assistant(dialogue, "Start a new conversation.", MessageKind.RECOVERY, revision=0)
+    assert dialogue.assistant_count == 100
 
 
 def complete(state: ActiveConversation, text: str) -> ActiveConversation:

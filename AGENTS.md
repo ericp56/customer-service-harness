@@ -30,12 +30,15 @@ browser persistence, transcript storage, uploads, analytics, or application
 log store.
 
 - `src/app.py` owns Gradio UI/event wiring, FastAPI health/readiness endpoints,
-  accessible fixed status/progress/approval messages, and the boundary from
+  accessible fixed chat progress/validation/recovery/approval messages, and the boundary from
   callbacks to transient task state and the task runtime.
 - `src/chat.py` is the pure immutable state machine. It validates messages,
-  enforces 4,096 Unicode code points and 50 completed user/assistant pairs,
+  enforces 4,096 Unicode code points, 50 accepted caller messages and 100 assistant entries,
   preserves failed input for retry, and stores tool records separately from
   displayable chat messages.
+- `src/conversation_runtime.py` owns one transient server-side worker, an inbox
+  of 10, versioned change confirmation, independent acceptance/publication and
+  generation-guarded cancellation/reset/unload/expiry. No coordinator is serialized.
 - `src/ai_client.py` owns validated environment configuration and bounded async
   OpenAI-compatible clients. Each agent role receives a distinct client/model
   object. Model attempts have a maximum 10-second timeout, no automatic retries,
@@ -65,12 +68,20 @@ log store.
   Call lines include only the explicit task-state snapshot allowlist; one
   `task_outcome` line records the final caller-turn status and safe snapshot.
 
-The successful submission path is: Gradio async event -> `begin_submission` ->
-bounded task runtime -> `complete_submission` -> rendered display messages.
-Progress is emitted in a separate accessible status component every five seconds
-while active, never in chat history. Clarification pauses the active-time budget
-and resumes on customer input. Provider/configuration failures go through
-`fail_submission`, retain the pending input, and show fixed retry-safe status.
+The public path is: short Gradio ingress -> ordered caller event/inbox -> one
+bounded task worker -> committed-step reconciliation -> independent publication ->
+250ms subscriber. Send stays enabled while active. Only browser ingress clears
+submitted text; accepted acknowledgements and subscribers never erase later typing.
+Fixed progress is emitted as accessible assistant chat entries initially and then
+at five-second samples only when the displayed wording changes; optional progress
+is suppressed from 90 assistant entries onward. Validation, capacity, and recovery
+notices also appear in chat while rejected input remains unaccepted. Notices count
+within the 100-assistant-entry bound and are excluded from model context and
+diagnostics. No separate visible status component is used. Clarification pauses the active-time budget
+and resumes on customer input. Corrections/cancel/switch require versioned Yes/No
+confirmation. No resumes committed facts; newer proposals require fresh confirmation.
+Provider failures retain an accepted-event retry reference and committed facts;
+exhausted budgets require reset. Legacy pair helpers are not the public UI path.
 
 ## Privacy, Reliability, and Performance Invariants
 
@@ -99,7 +110,8 @@ and resumes on customer input. Provider/configuration failures go through
   non-negative integer metrics, and booleans.
 - Keep each model attempt bounded to 10 seconds with no automatic SDK retries.
   Bound active task work to 60 seconds and no more than eight manager turns
-  per caller message.
+  per caller-processing batch, including reconciliation. Confirmation waits are
+  excluded from active time; same-task corrections retain the remaining budget.
   Permit one strict capability call per model turn and disable parallel tool
   calls. Unknown, malformed, duplicate-call-ID, replayed-step, or unapproved
   capability calls are safe declared failures.

@@ -1,5 +1,10 @@
 # Quickstart: Agent-Assisted Customer Tasks
 
+**Current public UI supersession**: Feature 005's 2026-10-12 refinement replaces
+the separate status region described in this historical quickstart. Progress and
+validation/capacity notices now appear as fixed assistant chat entries; see the
+[current conversation contract](../../005-async-conversation/contracts/conversation-events.md).
+
 ## Prerequisites
 
 - Python 3.14 and the project development dependencies installed.
@@ -21,7 +26,7 @@ Run the browser task journeys:
 pytest -m e2e tests/e2e/test_echo_chat.py
 ```
 
-Expected coverage in the existing browser journey file includes supported synthetic lookups, current date/time, missing-information clarification, periodic progress outside the chat transcript, approval/rejection of the no-op simulated action, cancellation, timeout, failure recovery, stale/replayed decisions, and privacy assertions.
+Expected coverage in the existing browser journey file includes supported synthetic lookups, current date/time, missing-information clarification, progress chat entries, approval/rejection of the no-op simulated action, cancellation, timeout, failure recovery, stale/replayed decisions, and privacy assertions.
 
 ## Manual UI Smoke Test
 
@@ -32,7 +37,7 @@ python -m src.app
 ```
 
 1. Submit a request answerable by a synthetic fixture; confirm the final answer is useful and contains no internal tool or orchestration details.
-2. Use the deterministic slow-task fixture; confirm a separate accessible progress status appears at five-second intervals, changes from lookup activity to result evaluation when that becomes the current phase, and stops when the task completes or asks a question. Confirm unknown activity falls back to the existing two fixed messages and progress never names a capability or includes model-provided copy.
+2. Use the deterministic slow-task fixture; confirm fixed accessible progress chat messages appear initially and at five-second samples only when displayed wording changes, reflect the latest activity, and stop when the task completes or asks a question. Confirm no caller reply is required, progress never names a capability or includes model-provided copy, and no separate status region is shown.
 3. Ask a task requiring clarification; confirm updates pause, answer the question, and confirm processing resumes only with the remaining task budget.
 4. Trigger the simulated consequential step; confirm it has no effect before explicit approval, rejection/cancel does not execute it, and the UI displays the resulting outcome.
 5. Cancel a slow task; confirm no subsequent step starts and the result reports whether any step had already completed.

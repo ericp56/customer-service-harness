@@ -101,6 +101,25 @@ def test_ended_session_rejects_further_checks() -> None:
 def test_support_contact_depends_on_verified_zip() -> None:
     assert support_contact(CallerSession()) is None
     assert support_contact(CallerSession(current_account="123")) is None
-    assert support_contact(CallerSession(verified_account="123")) == "800-555-1212"
-    assert support_contact(CallerSession(verified_account="456")) == "help@demo.com"
+    assert support_contact(CallerSession(current_account="123", verified_account="123")) == "800-555-1212"
+    assert support_contact(CallerSession(current_account="456", verified_account="456")) == "help@demo.com"
     assert support_contact(CallerSession(verified_account="123", ended=True)) is None
+
+
+def test_correction_invalidates_identity_without_refunding_attempts() -> None:
+    from src.accounts import correct_account
+
+    original = CallerSession(current_account="123", verified_account="123", account_attempts=2, zip_attempts=1)
+    corrected = correct_account(original, "456")
+    assert corrected.current_account is None and corrected.verified_account is None
+    assert corrected.account_attempts == 2 and corrected.zip_attempts == 1
+    assert support_contact(corrected) is None
+    selected, outcome = lookup_account(corrected, "456")
+    assert outcome is LookupResult.FOUND and selected.zip_attempts == 0
+    assert selected.account_attempts == 2 and selected.verified_account is None
+    assert correct_account(original, "123") == original
+    assert correct_account(CallerSession(ended=True), "456").ended
+
+
+def test_contact_rejects_superseded_verified_account() -> None:
+    assert support_contact(CallerSession(current_account="456", verified_account="123")) is None

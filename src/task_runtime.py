@@ -25,7 +25,7 @@ from src.chat import ChatMessage, ConversationItem
 from src.model_diagnostics import ModelCallRecorder
 from src.observability import TaskName, TaskProgressSnapshot, record_task_outcome
 from src.task_agents import CatalogRoute, ConversationResponse, TaskAgents, TaskProgressHooks, catalog_conversation, create_task_agents
-from src.tools import TASK_TOOLS, TaskActivity, TaskProgress, TaskToolLedger
+from src.tools import TASK_TOOLS, ExecutionControl, RevisionRequested, TaskActivity, TaskProgress, TaskToolLedger
 
 MAX_ACTIVE_SECONDS = 60.0
 MAX_MANAGER_TURNS = 8
@@ -92,6 +92,7 @@ class TaskState:
     task_name: TaskName | None = None
     catalog_facts: CatalogFacts = CatalogFacts()
     catalog_input: str = ""
+    input_revision: int = 0
 
 
 @dataclass(frozen=True)
@@ -306,7 +307,7 @@ def _conversation_input(
     items = [
         {"role": item.role, "content": item.content}
         for item in history
-        if isinstance(item, ChatMessage)
+        if isinstance(item, ChatMessage) and item.model_visible
     ]
     if prior_task is not None and prior_task.task_name is not None:
         items.append({"role": "assistant", "content": "Continuing catalog task: " + prior_task.task_name.value})
@@ -412,9 +413,20 @@ async def run_customer_task(
     prior_task: TaskState | None = None,
     caller: CallerSession | None = None,
     progress: TaskProgress | None = None,
+    control: ExecutionControl | None = None,
 ) -> TaskRunResult:
     """Run one bounded manager/specialist workflow without retaining provider errors."""
     started_at = monotonic()
+
+    def current_time() -> float:
+        if control is not None:
+            return started_at + max(0.0, control.active_seconds - control.base_seconds)
+        return monotonic()
+
+    async def bounded(work: Any, seconds: float) -> Any:
+        if control is not None:
+            return await control.run(work)
+        return await asyncio.wait_for(work, timeout=seconds)
 
     def finish(
         result: TaskRunResult,
@@ -423,6 +435,8 @@ async def run_customer_task(
     ) -> TaskRunResult:
         if progress is not None:
             progress.clear()
+        if control is not None:
+            return result
         try:
             snapshot = _task_progress_snapshot(result.task, ledger, turn_count=turn_count)
             record_task_outcome(
@@ -474,7 +488,15 @@ async def run_customer_task(
             if prior_task is not None and prior_task.status is TaskStatus.FAILED and prior_task.catalog_input == pending_text
             else CatalogFacts()
         ),
+        control=control,
     )
+    if control is not None:
+        control.base_seconds = turn.state.active_seconds
+        control.started_at = started_at
+        control.paused_seconds = 0.0
+        control.state = turn.state
+        turn = TaskTransition(replace(turn.state, input_revision=control.revision), turn.outcome)
+        control.state = turn.state
     remaining_seconds = remaining_active_seconds(turn.state)
     if remaining_seconds <= 0:
         timed_out = replace(turn.state, status=TaskStatus.TIMED_OUT, last_active_at=None)
@@ -483,10 +505,13 @@ async def run_customer_task(
             ConversationResponse(status="failed", message="This task took too long to finish. Please try again."),
             TaskOutcome.TIMED_OUT,
         ))
-    recorder = ModelCallRecorder(
-        turn.state.task_id,
-        lambda turns: _task_progress_snapshot(turn.state, tool_ledger, turn_count=turns),
-    )
+    recorder = control.recorder if control is not None and control.recorder is not None and control.recorder.task_id == turn.state.task_id else ModelCallRecorder(turn.state.task_id)
+    recorder.update_snapshot(lambda turns: _task_progress_snapshot(
+        replace(turn.state, active_seconds=min(60.0, control.active_seconds), last_active_at=None) if control is not None else turn.state,
+        tool_ledger, turn_count=control.manager_turns if control is not None else turns,
+    ))
+    if control is not None:
+        control.recorder = recorder
     recording_token = recorder.activate()
     try:
         if agents is None:
@@ -511,6 +536,8 @@ async def run_customer_task(
 
         if agents.routing is None:
             raise ValueError("invalid catalog router")
+        if control is not None:
+            control.agents = agents
         routing_input = [{"role": "user", "content": pending_text}]
         if prior_task is not None and prior_task.task_name is not None:
             expected_detail = "zip_code" if prior_task.caller.current_account is not None else "account_number"
@@ -518,24 +545,27 @@ async def run_customer_task(
                 "Application-owned pending catalog task: " + prior_task.task_name.value
                 + ". Expected detail: " + expected_detail + "."
             )})
-        routed = await asyncio.wait_for(
-            Runner.run(
-                agents.routing,
-                routing_input,
-                context=tool_ledger,
-                run_config=run_configuration,
-                max_turns=1,
-                hooks=TaskProgressHooks("conversation"),
-            ),
-            timeout=remaining_seconds,
-        )
-        route = routed.final_output
+        if control is not None and control.admitted_route is not None:
+            route = control.admitted_route
+        else:
+            routed = await bounded(
+                Runner.run(
+                    agents.routing,
+                    routing_input,
+                    context=tool_ledger,
+                    run_config=run_configuration,
+                    max_turns=1,
+                    hooks=TaskProgressHooks("conversation"),
+                ),
+                remaining_seconds,
+            )
+            route = routed.final_output
         if not isinstance(route, CatalogRoute):
             raise ValueError("invalid catalog route")
         if route.action in ("decline", "help"):
             outcome = TaskOutcome.OUT_OF_SCOPE if route.action == "decline" else TaskOutcome.CATALOG_HELP
             message = SCOPE_REFUSAL if route.action == "decline" else CATALOG_HELP
-            elapsed_route = accrue_active_time(turn.state, now=monotonic())
+            elapsed_route = accrue_active_time(turn.state, now=current_time())
             if elapsed_route.outcome is TaskOutcome.TIMED_OUT:
                 return finish(TaskRunResult(
                     elapsed_route.state,
@@ -551,6 +581,12 @@ async def run_customer_task(
                 ConversationResponse(status="declined" if route.action == "decline" else "catalog_help", message=message),
                 outcome,
             ), tool_ledger, recorder.manager_turn_count)
+        if control is not None and prior_task is not None and prior_task.task_name is not None and control.admitted_route is None and prior_task.status is not TaskStatus.FAILED:
+            tool_ledger.task_name = prior_task.task_name
+            control.pending_route = route
+            await bounded(tool_ledger.checkpoint("continuation"), remaining_seconds)
+        if route.action == "cancel":
+            raise ValueError("no active catalog task")
         admitted_name = route.task_name
         if route.action == "continuation":
             if prior_task is None or prior_task.task_name is None:
@@ -558,8 +594,8 @@ async def run_customer_task(
             admitted_name = prior_task.task_name
         if not isinstance(admitted_name, TaskName):
             raise ValueError("invalid catalog task")
-        if prior_task is not None and prior_task.task_name not in (None, admitted_name):
-            switch_time = accrue_active_time(turn.state, now=monotonic())
+        if control is None and prior_task is not None and prior_task.task_name not in (None, admitted_name):
+            switch_time = accrue_active_time(turn.state, now=current_time())
             if switch_time.outcome is TaskOutcome.TIMED_OUT:
                 return finish(TaskRunResult(
                     switch_time.state,
@@ -581,12 +617,13 @@ async def run_customer_task(
             ), tool_ledger, recorder.manager_turn_count)
         tool_ledger.task_name = admitted_name
         tool_ledger.detail_kind = route.detail_kind
+        await bounded(tool_ledger.checkpoint("admitted"), remaining_seconds)
         tool_ledger.progress.set(TaskActivity.WORKING_ON_TASK, admitted_name)
-        remaining_seconds = remaining_active_seconds(accrue_active_time(turn.state, now=monotonic()).state)
+        remaining_seconds = remaining_active_seconds(accrue_active_time(turn.state, now=current_time()).state)
         if remaining_seconds <= 0:
             raise TimeoutError()
         execution_agent = catalog_conversation(agents, admitted_name, route.detail_kind, tool_ledger.caller)
-        result = await asyncio.wait_for(
+        result = await bounded(
             Runner.run(
                 execution_agent,
                 _conversation_input(history, pending_text, prior_task),
@@ -595,11 +632,21 @@ async def run_customer_task(
                 max_turns=MAX_MANAGER_TURNS - 1,
                 hooks=TaskProgressHooks("conversation"),
             ),
-            timeout=remaining_seconds,
+            remaining_seconds,
         )
+        await bounded(tool_ledger.checkpoint("publication"), remaining_seconds)
+    except RevisionRequested:
+        elapsed = accrue_active_time(turn.state, now=current_time())
+        status = TaskStatus.SESSION_ENDED if tool_ledger.caller.ended else TaskStatus.CANCELED if control is not None and control.change_action in ("switch", "cancel") else TaskStatus.WAITING_FOR_CLARIFICATION
+        checkpoint = replace(_merge_tool_ledger(elapsed.state, tool_ledger), status=status, last_active_at=None)
+        return finish(TaskRunResult(
+            checkpoint,
+            ConversationResponse(status="session_ended" if tool_ledger.caller.ended else "clarification_required", message="", task_name=tool_ledger.task_name),
+            TaskOutcome.SESSION_ENDED if tool_ledger.caller.ended else TaskOutcome.RESUMED,
+        ), tool_ledger, recorder.manager_turn_count)
     except asyncio.CancelledError:
         recorder.fail("canceled")
-        elapsed = accrue_active_time(turn.state, now=monotonic())
+        elapsed = accrue_active_time(turn.state, now=current_time())
         canceled_state = replace(
             _merge_tool_ledger(elapsed.state, tool_ledger),
             status=TaskStatus.CANCELED,
@@ -629,7 +676,7 @@ async def run_customer_task(
         )
     except ModelTimeoutError:
         recorder.fail("timeout")
-        elapsed = accrue_active_time(turn.state, now=monotonic())
+        elapsed = accrue_active_time(turn.state, now=current_time())
         if elapsed.outcome is TaskOutcome.TIMED_OUT:
             timed_out = _merge_tool_ledger(elapsed.state, tool_ledger)
             return finish(TaskRunResult(
@@ -658,7 +705,7 @@ async def run_customer_task(
                 ConversationResponse(status="failed", message="This task took too long to finish. Please try again."),
                 TaskOutcome.TIMED_OUT,
             ), tool_ledger, recorder.manager_turn_count)
-        elapsed = accrue_active_time(turn.state, now=monotonic())
+        elapsed = accrue_active_time(turn.state, now=current_time())
         if elapsed.outcome is TaskOutcome.TIMED_OUT:
             timed_out = _merge_tool_ledger(elapsed.state, tool_ledger)
             return finish(TaskRunResult(
@@ -675,13 +722,15 @@ async def run_customer_task(
     finally:
         recorder.fail("canceled")
         recorder.deactivate(recording_token)
-        for owned_client in owned_clients:
+        if control is not None:
+            control.owned_clients.extend(owned_clients)
+        for owned_client in owned_clients if control is None else ():
             try:
                 await owned_client.close()
             except Exception:
                 pass
 
-    elapsed = accrue_active_time(turn.state, now=monotonic())
+    elapsed = accrue_active_time(turn.state, now=current_time())
     if elapsed.outcome is TaskOutcome.TIMED_OUT:
         return finish(TaskRunResult(
             _merge_tool_ledger(elapsed.state, tool_ledger),
@@ -689,7 +738,7 @@ async def run_customer_task(
             TaskOutcome.TIMED_OUT,
         ), tool_ledger, recorder.manager_turn_count)
 
-    manager_turn_count = min(MAX_MANAGER_TURNS, 1 + len(result.raw_responses))
+    manager_turn_count = control.manager_turns if control is not None else min(MAX_MANAGER_TURNS, 1 + len(result.raw_responses))
     response = result.final_output
     elapsed_state = replace(
         _merge_tool_ledger(elapsed.state, tool_ledger),
