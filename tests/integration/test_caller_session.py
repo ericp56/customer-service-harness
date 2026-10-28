@@ -226,6 +226,390 @@ def test_catalog_completion_logs_parent_task_name_across_resume(monkeypatch, run
     assert "800-555-1212" in final[0][-1]["content"]
 
 
+def _new_account_update_session():
+    from agents.testing import ModelStep, ScriptedModel, assistant_message, function_call
+
+    from src.conversation_runtime import SessionCoordinator
+    from src.observability import TaskName
+    from src.task_agents import create_task_agents
+    from src.tools import TASK_TOOLS
+
+    conversation_model = ScriptedModel([
+        ModelStep(output=[assistant_message(json.dumps({
+            "action": "task",
+            "task_name": TaskName.UPDATE_ACCOUNT.value,
+            "detail_kind": "none",
+            "decline_remainder": False,
+        }))]),
+        ModelStep(output=[function_call(
+            "delegate_to_task_agent", {"input": "Update favorite color to red"}, call_id="update-delegate",
+        )]),
+        ModelStep(output=[assistant_message(json.dumps({
+            "status": "approval_required",
+            "message": "FORBIDDEN-MODEL-APPROVAL-TEXT",
+            "task_result": {
+                "status": "approval_required",
+                "summary": "Proposed color change.",
+                "question": None,
+                "proposal": "red",
+            },
+        }))]),
+    ])
+    task_model = ScriptedModel([
+        ModelStep(output=[function_call(
+            "proposeFavoriteColorUpdate", {"favorite_color": "red"}, call_id="update-color",
+        )]),
+        ModelStep(output=[assistant_message(json.dumps({
+            "status": "approval_required",
+            "summary": "Proposed color change.",
+            "question": None,
+            "proposal": "red",
+        }))]),
+    ])
+    session = SessionCoordinator(agents=create_task_agents(
+        conversation_model=conversation_model,
+        task_model=task_model,
+        task_tools=TASK_TOOLS,
+    ))
+    session.task = TaskState(
+        "verified",
+        TaskStatus.COMPLETED,
+        0.1,
+        None,
+        caller=CallerSession(current_account="123", verified_account="123"),
+    )
+    return session
+
+
+async def _wait_for_account_update(session) -> None:
+    assert await session.accept("Change my favorite color to red")
+    await session.wait_until(lambda: session.task is not None and session.task.status is TaskStatus.WAITING_FOR_APPROVAL)
+
+
+def test_account_update_waits_for_approval_before_committing(run_async) -> None:
+    from src.customer_data import retrieve_account
+
+    session = _new_account_update_session()
+
+    async def scenario() -> None:
+        await _wait_for_account_update(session)
+        assert retrieve_account(session.demo_data, "123").favorite_color == "blue"
+        assert session.dialogue.history[-1].content == "Please approve changing your favorite color to red."
+        await session.resolve_approval(True)
+
+    run_async(scenario())
+
+    assert retrieve_account(session.demo_data, "123").favorite_color == "red"
+    assert session.task is not None and session.task.status is TaskStatus.COMPLETED
+    assert session.dialogue.history[-1].content == "Your favorite color is now red."
+
+
+def test_rejected_account_update_leaves_profile_unchanged(run_async) -> None:
+    from src.customer_data import retrieve_account
+
+    session = _new_account_update_session()
+
+    async def scenario() -> None:
+        await _wait_for_account_update(session)
+        await session.resolve_approval(False)
+
+    run_async(scenario())
+
+    assert retrieve_account(session.demo_data, "123").favorite_color == "blue"
+    assert session.task is not None and session.task.status is TaskStatus.REJECTED
+    assert session.task.pending_mutation is None
+    assert session.dialogue.history[-1].content == "No change was made."
+
+
+def test_stale_account_update_fails_closed(run_async) -> None:
+    from dataclasses import replace
+
+    from src.customer_data import retrieve_account
+
+    session = _new_account_update_session()
+
+    async def scenario() -> None:
+        await _wait_for_account_update(session)
+        session.demo_data = replace(session.demo_data, revision=session.demo_data.revision + 1)
+        await session.resolve_approval(True)
+
+    run_async(scenario())
+
+    assert retrieve_account(session.demo_data, "123").favorite_color == "blue"
+    assert session.task is not None and session.task.status is TaskStatus.FAILED
+    assert session.task.pending_mutation is None
+    assert session.dialogue.history[-1].content == "I couldn't apply that change. No data was changed."
+
+
+def test_replayed_account_approval_does_not_commit_twice(run_async) -> None:
+    from src.customer_data import retrieve_account
+
+    session = _new_account_update_session()
+
+    async def scenario() -> None:
+        await _wait_for_account_update(session)
+        await session.resolve_approval(True)
+        committed_revision = session.demo_data.revision
+        await session.resolve_approval(True)
+        assert session.demo_data.revision == committed_revision
+
+    run_async(scenario())
+
+    assert retrieve_account(session.demo_data, "123").favorite_color == "red"
+
+
+def test_waiting_approval_rejects_superseding_caller_input(run_async) -> None:
+    from src.customer_data import retrieve_account
+
+    session = _new_account_update_session()
+
+    async def scenario() -> None:
+        await _wait_for_account_update(session)
+        accepted = await session.accept("Change my account to 456")
+        assert not accepted
+        await session.resolve_approval(False)
+
+    run_async(scenario())
+
+    assert retrieve_account(session.demo_data, "123").favorite_color == "blue"
+    assert session.task is not None and session.task.pending_mutation is None
+
+
+def test_cancel_discards_pending_account_mutation(run_async) -> None:
+    from src.customer_data import retrieve_account
+
+    session = _new_account_update_session()
+
+    async def scenario() -> None:
+        await _wait_for_account_update(session)
+        assert session.task is not None and session.task.pending_mutation is not None
+        await session.cancel()
+
+    run_async(scenario())
+
+    assert retrieve_account(session.demo_data, "123").favorite_color == "blue"
+    assert session.task is not None and session.task.status is TaskStatus.CANCELED
+    assert session.task.pending_mutation is None
+
+
+@pytest.mark.parametrize("lifecycle", ["reset", "close"])
+def test_conversation_lifecycle_discards_pending_account_mutation(run_async, lifecycle) -> None:
+    from src.customer_data import retrieve_account
+
+    session = _new_account_update_session()
+
+    async def scenario() -> None:
+        await _wait_for_account_update(session)
+        if lifecycle == "reset":
+            await session.reset()
+        else:
+            await session.close()
+
+    run_async(scenario())
+
+    assert session.task is None
+    assert session.demo_data.profiles == () if lifecycle == "close" else (
+        retrieve_account(session.demo_data, "123").favorite_color == "blue"
+    )
+
+
+def _new_case_mutation_session(task_name, tool_name: str, arguments: dict[str, str], caller_text: str):
+    from agents.testing import ModelStep, ScriptedModel, assistant_message, function_call
+
+    from src.conversation_runtime import SessionCoordinator
+    from src.task_agents import create_task_agents
+    from src.tools import TASK_TOOLS
+
+    conversation_model = ScriptedModel([
+        ModelStep(output=[assistant_message(json.dumps({
+            "action": "task",
+            "task_name": task_name.value,
+            "detail_kind": "none",
+            "decline_remainder": False,
+        }))]),
+        ModelStep(output=[function_call(
+            "delegate_to_task_agent", {"input": caller_text}, call_id="case-delegate",
+        )]),
+        ModelStep(output=[assistant_message(json.dumps({
+            "status": "approval_required",
+            "message": "UNTRUSTED-MODEL-APPROVAL",
+            "task_result": {
+                "status": "approval_required",
+                "summary": "Proposed case change.",
+                "question": None,
+                "proposal": "untrusted",
+            },
+        }))]),
+    ])
+    task_model = ScriptedModel([
+        ModelStep(output=[function_call(tool_name, arguments, call_id="case-write")]),
+        ModelStep(output=[assistant_message(json.dumps({
+            "status": "approval_required",
+            "summary": "Proposed case change.",
+            "question": None,
+            "proposal": "untrusted",
+        }))]),
+    ])
+    session = SessionCoordinator(agents=create_task_agents(
+        conversation_model=conversation_model,
+        task_model=task_model,
+        task_tools=TASK_TOOLS,
+    ))
+    session.task = TaskState(
+        "verified",
+        TaskStatus.COMPLETED,
+        0.1,
+        None,
+        caller=CallerSession(current_account="123", verified_account="123"),
+    )
+    return session
+
+
+def test_open_case_is_committed_only_after_approval(run_async) -> None:
+    from src.customer_data import list_open_cases
+    from src.observability import TaskName
+
+    caller_text = "Open a case: Package arrived damaged"
+    session = _new_case_mutation_session(
+        TaskName.OPEN_SUPPORT_CASE,
+        "proposeOpenSupportCase",
+        {"description": "Package arrived damaged"},
+        caller_text,
+    )
+
+    async def scenario() -> None:
+        assert await session.accept(caller_text)
+        await session.wait_until(lambda: session.task is not None and session.task.status is TaskStatus.WAITING_FOR_APPROVAL)
+        assert len(session.demo_data.cases) == 3
+        assert session.dialogue.history[-1].content == (
+            "Please approve opening a support case: Package arrived damaged."
+        )
+        await session.resolve_approval(True)
+
+    run_async(scenario())
+
+    cases = list_open_cases(session.demo_data, "123")
+    assert len(cases) == 2
+    assert cases[-1].case_number == "CASE-1003"
+    assert cases[-1].description == "Package arrived damaged"
+    assert session.dialogue.history[-1].content == (
+        "Your support case CASE-1003 is open. Would you like to list your open cases?"
+    )
+
+
+def test_case_content_and_identifiers_never_enter_diagnostics(run_async, capsys) -> None:
+    from src.observability import TaskName
+
+    description = "PRIVATE-CASE-DESCRIPTION-7F3"
+    caller_text = "Open a case: " + description
+    session = _new_case_mutation_session(
+        TaskName.OPEN_SUPPORT_CASE,
+        "proposeOpenSupportCase",
+        {"description": description},
+        caller_text,
+    )
+
+    async def scenario() -> None:
+        assert await session.accept(caller_text)
+        await session.wait_until(lambda: session.task is not None and session.task.status is TaskStatus.WAITING_FOR_APPROVAL)
+        await session.resolve_approval(True)
+
+    run_async(scenario())
+    output = capsys.readouterr().out
+
+    for private_value in (description, "CASE-1003", "12345", "Alex", "Demo card ending in 4242"):
+        assert private_value not in output
+    assert '"task_name":"Open Support Case"' in output
+
+
+def test_case_follow_up_is_appended_only_after_approval(run_async) -> None:
+    from src.customer_data import list_open_cases
+    from src.observability import TaskName
+
+    caller_text = "Follow up CASE-1001: The delivery is still delayed"
+    session = _new_case_mutation_session(
+        TaskName.FOLLOW_UP_CASE,
+        "proposeCaseFollowUp",
+        {"case_number": "CASE-1001", "follow_up": "The delivery is still delayed"},
+        caller_text,
+    )
+
+    async def scenario() -> None:
+        assert await session.accept(caller_text)
+        await session.wait_until(lambda: session.task is not None and session.task.status is TaskStatus.WAITING_FOR_APPROVAL)
+        case = next(case for case in list_open_cases(session.demo_data, "123") if case.case_number == "CASE-1001")
+        assert case.follow_ups == ()
+        assert session.dialogue.history[-1].content == (
+            "Please approve adding this follow-up to case CASE-1001: The delivery is still delayed."
+        )
+        await session.resolve_approval(True)
+
+    run_async(scenario())
+
+    case = next(case for case in list_open_cases(session.demo_data, "123") if case.case_number == "CASE-1001")
+    assert len(case.follow_ups) == 1
+    assert case.follow_ups[0].text == "The delivery is still delayed"
+    assert session.dialogue.history[-1].content == "Your follow-up was added to case CASE-1001."
+
+
+def test_case_close_is_applied_only_after_approval(run_async) -> None:
+    from src.customer_data import list_open_cases
+    from src.observability import TaskName
+
+    caller_text = "Close CASE-1001"
+    session = _new_case_mutation_session(
+        TaskName.CLOSE_SUPPORT_CASE,
+        "proposeCaseClosure",
+        {"case_number": "CASE-1001"},
+        caller_text,
+    )
+
+    async def scenario() -> None:
+        assert await session.accept(caller_text)
+        await session.wait_until(lambda: session.task is not None and session.task.status is TaskStatus.WAITING_FOR_APPROVAL)
+        assert any(case.case_number == "CASE-1001" for case in list_open_cases(session.demo_data, "123"))
+        await session.resolve_approval(True)
+
+    run_async(scenario())
+
+    assert all(case.case_number != "CASE-1001" for case in list_open_cases(session.demo_data, "123"))
+    assert session.dialogue.history[-1].content == "Case CASE-1001 is closed."
+
+
+def test_stale_case_revision_prevents_approved_follow_up(run_async) -> None:
+    from dataclasses import replace
+
+    from src.customer_data import list_open_cases
+    from src.observability import TaskName
+
+    caller_text = "Follow up CASE-1001: The delivery is still delayed"
+    session = _new_case_mutation_session(
+        TaskName.FOLLOW_UP_CASE,
+        "proposeCaseFollowUp",
+        {"case_number": "CASE-1001", "follow_up": "The delivery is still delayed"},
+        caller_text,
+    )
+
+    async def scenario() -> None:
+        assert await session.accept(caller_text)
+        await session.wait_until(lambda: session.task is not None and session.task.status is TaskStatus.WAITING_FOR_APPROVAL)
+        session.demo_data = replace(
+            session.demo_data,
+            cases=tuple(
+                replace(case, revision=case.revision + 1) if case.case_number == "CASE-1001" else case
+                for case in session.demo_data.cases
+            ),
+        )
+        await session.resolve_approval(True)
+
+    run_async(scenario())
+
+    case = next(case for case in session.demo_data.cases if case.case_number == "CASE-1001")
+    assert case.follow_ups == ()
+    assert case.case_number not in {case.case_number for case in list_open_cases(session.demo_data, "123") if case.status != "open"}
+    assert session.task is not None and session.task.status is TaskStatus.FAILED
+
+
 @pytest.mark.parametrize("title", ["Retrieve the current time", "Retrieve customer account", "Transfer to Customer Service"])
 def test_catalog_completion_names_reach_stdout(title, monkeypatch, run_async, capsys) -> None:
     from agents.testing import ModelStep, ScriptedModel, assistant_message, function_call

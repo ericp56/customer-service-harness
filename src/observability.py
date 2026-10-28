@@ -44,6 +44,12 @@ class TaskName(StrEnum):
     CURRENT_TIME = "Retrieve the current time"
     CUSTOMER_ACCOUNT = "Retrieve customer account"
     CUSTOMER_SERVICE = "Transfer to Customer Service"
+    RETRIEVE_ACCOUNT = "Retrieve Account"
+    UPDATE_ACCOUNT = "Update Account"
+    LIST_OPEN_CASES = "List Open Cases"
+    OPEN_SUPPORT_CASE = "Open Support Case"
+    FOLLOW_UP_CASE = "Follow Up Support Case"
+    CLOSE_SUPPORT_CASE = "Close Support Case"
 
 
 @dataclass(frozen=True)

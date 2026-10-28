@@ -92,6 +92,69 @@ def test_interrupt_accepts_input_while_actual_tool_is_blocked(run_async) -> None
     run_async(scenario())
 
 
+def test_conversation_sample_data_is_fresh_on_reset_and_cleared_on_close(run_async) -> None:
+    from src.conversation_runtime import SessionCoordinator
+    from src.customer_data import MutationKind, commit_mutation, propose_mutation, seed_demo_data
+
+    async def scenario() -> None:
+        session = SessionCoordinator()
+        initial = session.demo_data
+        proposal = propose_mutation(
+            initial,
+            proposal_id="session-update",
+            generation=1,
+            account_number="123",
+            kind=MutationKind.UPDATE_FAVORITE_COLOR,
+            value="red",
+        )
+        changed, outcome = commit_mutation(
+            initial,
+            proposal,
+            generation=1,
+            verified_account="123",
+        )
+        assert outcome.value == "applied"
+        session.demo_data = changed
+
+        await session.reset()
+        assert session.demo_data == seed_demo_data()
+        assert session.demo_data is not initial
+
+        session.demo_data = changed
+        await session.close()
+        assert session.demo_data.profiles == ()
+        assert session.demo_data.cases == ()
+
+    run_async(scenario())
+
+
+def test_conversation_sample_data_never_enters_rendered_projection_or_diagnostics(run_async, capsys) -> None:
+    from src.conversation_runtime import SessionCoordinator
+
+    async def scenario() -> str:
+        session = SessionCoordinator()
+        try:
+            projection = await app.conversation_render_event(session)
+            return json.dumps(projection, default=str)
+        finally:
+            await session.close()
+
+    rendered = run_async(scenario())
+    diagnostics = capsys.readouterr().out
+
+    for private_value in (
+        "12345",
+        "54321",
+        "Alex",
+        "Jordan",
+        "Delivery status question",
+        "Service appointment question",
+        "Demo card ending in 4242",
+    ):
+        assert private_value not in rendered
+        assert private_value not in diagnostics
+
+
 def state_from_result(result: app.CallbackResult) -> ActiveConversation:
     return result.state
 

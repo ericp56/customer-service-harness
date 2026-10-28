@@ -17,7 +17,7 @@ from src.task_runtime import (
     TaskState,
     TaskStatus,
 )
-from test_echo_chat import browser_runtime_available, echo_url, submit  # noqa: F401
+from test_echo_chat import browser_runtime_available, echo_url, submit  # noqa: F401,F811
 
 pytestmark = pytest.mark.e2e
 
@@ -235,5 +235,66 @@ def test_catalog_refusal_preserves_verification_on_desktop_and_mobile(page, echo
     submit(page, "12345")
     expect(page.locator("#echo-conversation")).to_contain_text("Your account is verified.")
     expect(page.locator("#echo-conversation")).not_to_contain_text("FORBIDDEN-MODEL-PROSE")
+    assert page.evaluate("Object.keys(localStorage)") == []
+    assert page.evaluate("Object.keys(sessionStorage)") == []
+
+
+@pytest.mark.parametrize("viewport", [{"width": 1280, "height": 900}, {"width": 390, "height": 844}])
+def test_human_support_transfer_still_verifies_before_contact(page, echo_url: str, monkeypatch, viewport) -> None:  # noqa: F811
+    import json
+
+    from agents.testing import ModelStep, ScriptedModel, assistant_message, function_call
+    from src.observability import TaskName
+    from src.task_agents import create_task_agents
+    from src.task_runtime import run_customer_task
+    from src.tools import TASK_TOOLS
+
+    def route(action: str, task_name: str | None = None, detail_kind: str = "none") -> ModelStep:
+        return ModelStep(output=[assistant_message(json.dumps({
+            "action": action,
+            "task_name": task_name,
+            "detail_kind": detail_kind,
+            "decline_remainder": False,
+        }))])
+
+    conversation_model = ScriptedModel([
+        route("task", TaskName.CUSTOMER_SERVICE.value),
+        ModelStep(output=[assistant_message('{"status":"clarification_required","message":"Provide account number."}')]),
+        route("continuation", detail_kind="account_number"),
+        ModelStep(output=[function_call("delegate_to_task_agent", {"input": "Account 123"}, call_id="transfer-account")]),
+        ModelStep(output=[assistant_message('{"status":"clarification_required","message":"Provide zip."}')]),
+        route("continuation", detail_kind="zip_code"),
+        ModelStep(output=[function_call("delegate_to_task_agent", {"input": "Verify 12345"}, call_id="transfer-verified")]),
+        ModelStep(output=[assistant_message('{"status":"completed","message":"UNTRUSTED-TRANSFER-COPY"}')]),
+    ])
+    task_model = ScriptedModel([
+        ModelStep(output=[function_call("account_lookup", {"account_number": "123"}, call_id="transfer-lookup")]),
+        ModelStep(output=[assistant_message('{"status":"clarification_required","summary":"Need zip."}')]),
+        ModelStep(output=[function_call("verify_account_zip", {"zip_code": "12345"}, call_id="transfer-zip")]),
+        ModelStep(output=[function_call("getSupportContact", {}, call_id="transfer-contact")]),
+        ModelStep(output=[assistant_message('{"status":"completed","summary":"Contact returned."}')]),
+    ])
+    agents = create_task_agents(
+        conversation_model=conversation_model,
+        task_model=task_model,
+        task_tools=TASK_TOOLS,
+    )
+
+    async def boundary(text: str, history: tuple, **kwargs) -> TaskRunResult:
+        return await run_customer_task(text, history, agents=agents, **kwargs)
+
+    monkeypatch.setattr(app, "run_customer_task", boundary)
+    page.set_viewport_size(viewport)
+    page.goto(echo_url)
+    conversation = page.locator("#echo-conversation")
+
+    submit(page, "Transfer me to Customer Service")
+    expect(conversation).to_contain_text("What is your account number?")
+    submit(page, "123")
+    expect(conversation).to_contain_text("What is your zip code?")
+    submit(page, "12345")
+    expect(conversation).to_contain_text("Please call Customer Service at 800-555-1212.")
+    expect(conversation).not_to_contain_text("UNTRUSTED-TRANSFER-COPY")
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
     assert page.evaluate("Object.keys(localStorage)") == []
     assert page.evaluate("Object.keys(sessionStorage)") == []

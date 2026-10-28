@@ -44,6 +44,9 @@ def _agents(
     task_name = {
         "getCurrentDateTimeIso": TaskName.CURRENT_TIME,
         "getSupportContact": TaskName.CUSTOMER_SERVICE,
+        "retrieveAccountProfile": TaskName.RETRIEVE_ACCOUNT,
+        "proposeFavoriteColorUpdate": TaskName.UPDATE_ACCOUNT,
+        "listOpenCases": TaskName.LIST_OPEN_CASES,
     }.get(tool_name, TaskName.CUSTOMER_ACCOUNT)
     detail_kind = {"account_lookup": "account_number", "verify_account_zip": "zip_code"}.get(tool_name, "none")
     return create_task_agents(
@@ -221,6 +224,123 @@ def test_transfer_gives_no_contact_without_verification(run_async) -> None:
     assert results == ""
     assert "800-555-1212" not in results
     assert "help@demo.com" not in results
+
+
+def test_retrieve_account_renders_only_typed_allowlisted_facts(run_async) -> None:
+    agents = _agents(
+        "retrieveAccountProfile",
+        {},
+        _COMPLETED,
+        _completed_reply("MODEL-AUTHORED-ACCOUNT-REPLY"),
+    )
+
+    result = run_async(
+        run_customer_task(
+            "Retrieve Account",
+            (),
+            agents=agents,
+            caller=CallerSession(current_account="123", verified_account="123"),
+        )
+    )
+
+    assert result.task.status is TaskStatus.COMPLETED
+    assert result.response.message == (
+        "Favorite color: blue. Preferred name: Alex. Demo card on file: no."
+    )
+    assert "12345" not in result.response.message
+    assert "MODEL-AUTHORED" not in result.response.message
+
+
+def test_retrieve_account_tool_cannot_return_profile_before_verification(run_async) -> None:
+    agents = _agents(
+        "retrieveAccountProfile",
+        {},
+        _COMPLETED,
+        _completed_reply("MODEL-AUTHORED-ACCOUNT-REPLY"),
+    )
+
+    result = run_async(run_customer_task("Retrieve Account", (), agents=agents))
+
+    assert result.outcome is TaskOutcome.FAILED
+    assert result.task.catalog_facts.profile is None
+    assert result.response.message != "Favorite color: blue. Preferred name: Alex. Demo card on file: no."
+    assert "MODEL-AUTHORED" not in result.response.message
+
+
+def test_list_open_cases_renders_only_verified_account_cases(run_async) -> None:
+    agents = _agents(
+        "listOpenCases",
+        {},
+        _COMPLETED,
+        _completed_reply("MODEL-AUTHORED-CASE-REPLY"),
+    )
+
+    result = run_async(
+        run_customer_task(
+            "List Open Cases",
+            (),
+            agents=agents,
+            caller=CallerSession(current_account="123", verified_account="123"),
+        )
+    )
+
+    assert result.task.status is TaskStatus.COMPLETED
+    assert result.response.message == (
+        "Your open support cases are: CASE-1001: Delivery status question."
+    )
+    assert "CASE-1000" not in result.response.message
+    assert "CASE-1002" not in result.response.message
+    assert "MODEL-AUTHORED" not in result.response.message
+
+
+def test_empty_open_case_list_has_fixed_reply() -> None:
+    from src.catalog_policy import CatalogFacts, catalog_reply
+
+    status, message = catalog_reply(
+        TaskName.LIST_OPEN_CASES,
+        CallerSession(current_account="123", verified_account="123"),
+        CatalogFacts(cases=()),
+        completed=True,
+    )
+
+    assert status == "completed"
+    assert message == "You have no open support cases."
+
+
+@pytest.mark.parametrize(
+    ("task_name", "empty_message", "question"),
+    [
+        (TaskName.FOLLOW_UP_CASE, "You have no open support cases to update.", "Which open case would you like to update, and what follow-up should I add?"),
+        (TaskName.CLOSE_SUPPORT_CASE, "You have no open support cases to close.", "Which open case would you like to close?"),
+    ],
+)
+def test_case_mutation_tasks_ask_for_selection_from_typed_open_cases(
+    task_name, empty_message, question
+) -> None:
+    from src.catalog_policy import CatalogFacts, catalog_reply
+    from src.customer_data import seed_demo_data
+
+    data = seed_demo_data()
+    cases = tuple(case for case in data.cases if case.account_number == "123" and case.status == "open")
+    status, message = catalog_reply(
+        task_name,
+        CallerSession(current_account="123", verified_account="123"),
+        CatalogFacts(cases=cases),
+        completed=False,
+    )
+
+    assert status == "clarification_required"
+    assert message == question
+
+    status, message = catalog_reply(
+        task_name,
+        CallerSession(current_account="123", verified_account="123"),
+        CatalogFacts(cases=()),
+        completed=False,
+    )
+
+    assert status == "completed"
+    assert message == empty_message
 
 
 def test_tool_results_never_contain_a_stored_zip_code(run_async) -> None:

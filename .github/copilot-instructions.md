@@ -19,7 +19,10 @@ disable SDK tracing and durable agent sessions, and ensure progress text is fixe
 application copy outside the chat transcript.
 For caller-service tasks, keep verification rules and attempt limits in
 `src/accounts.py`, never expose or log a zip code, and log only a validated
-account number.
+account number. Feature 006 profile and case data must remain in the
+conversation-scoped `DemoData` snapshot; expose only allowlisted settings, use
+the fixed synthetic card alias only, and require separate explicit approval for
+every profile/card/case write. Never accept real payment data.
 For model-call diagnostics, emit only the fixed content-free `model_call` fields
 and random `task_id`, plus the explicit allowlisted task snapshot and final
 `task_outcome` record; never log prompts, replies, proposals, results, account

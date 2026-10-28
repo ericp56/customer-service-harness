@@ -51,14 +51,16 @@ log store.
 - `src/task_runtime.py` owns pure task lifecycle transitions, active-time
   accounting, turn/capability limits, cancellation, clarification resume, and
   one-shot simulated approval decisions.
-- `src/tools.py` defines `getCurrentDateTimeIso` and deterministic synthetic
-  read-only customer-service lookups. Schemas are strict and server-owned. The
-  simulated consequential action is an in-memory no-op, not an external side effect.
+- `src/tools.py` defines `getCurrentDateTimeIso`, deterministic synthetic customer-service lookups, verified profile/case reads, and field-scoped proposal capabilities. Schemas are strict and server-owned. Approved profile/case mutations affect only the coordinator's transient `DemoData`; the synthetic card alias is not payment data and there are no external side effects.
 - `src/accounts.py` owns the hard-coded demo accounts and the pure caller
   verification rules (three account-number attempts, two zip attempts per
-  account, session end, support-contact choice). The model only reaches them
-  through the `account_lookup`, `verify_account_zip`, and `getSupportContact`
-  tools and never sees a stored zip code. The task catalog is
+  account, session end, support-contact choice). The model only reaches
+  verification through the `account_lookup`, `verify_account_zip`, and
+  `getSupportContact` tools and never sees a stored zip code. `src/customer_data.py`
+  owns deterministic session-local profiles/cases and validated mutations;
+  `Retrieve Account` exposes only favorite color, preferred name, and demo-card-on-file
+  status. `Update Account` and every case write require separate explicit approval
+  before commit. No real card data is accepted. The task catalog is
   `src/prompts/task_catalog.md`; a "caller" is the user who starts the conversation.
 - `src/observability.py` emits privacy-safe UTC JSON Lines to stdout and keeps
   bounded, in-process aggregate diagnostics only.

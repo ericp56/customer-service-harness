@@ -17,6 +17,14 @@ from agents import RunConfig, Runner
 from src.accounts import correct_account, is_account_number
 from src.catalog_policy import CATALOG_HELP, SAFE_FAILURE, SCOPE_REFUSAL, CatalogFacts, catalog_reply
 from src.chat import CallerInput, Dialogue, MessageKind, accept_caller, publish_assistant, validate_submission
+from src.customer_data import (
+    DemoData,
+    MutationKind,
+    MutationOutcome,
+    commit_mutation,
+    retrieve_account,
+    seed_demo_data,
+)
 from src.model_diagnostics import ModelCallRecorder
 from src.observability import TaskName, record_task_outcome
 from src.task_agents import CatalogRoute, ConversationResponse, INTERRUPTION_INSTRUCTIONS, InterruptionDecision, TaskAgents, TaskProgressHooks
@@ -42,6 +50,7 @@ class ChangeProposal:
 @dataclass
 class SessionCoordinator:
     agents: TaskAgents | None = field(default=None, repr=False)
+    demo_data: DemoData = field(default_factory=seed_demo_data, repr=False)
     dialogue: Dialogue = field(default_factory=Dialogue, repr=False)
     task: TaskState | None = field(default=None, repr=False)
     inbox: deque[CallerInput] = field(default_factory=deque, repr=False)
@@ -110,6 +119,106 @@ class SessionCoordinator:
         async with self._lock:
             if self.task is None:
                 return
+            if self.task.pending_mutation is not None:
+                if self.task.status is not TaskStatus.WAITING_FOR_APPROVAL:
+                    return
+                proposal = self.task.pending_mutation
+                if not approved:
+                    self.task = replace(
+                        self.task,
+                        status=TaskStatus.REJECTED,
+                        pending_proposal=None,
+                        pending_mutation=None,
+                        last_active_at=None,
+                    )
+                    message = "No change was made."
+                    self.status = message
+                    self._publish(message, MessageKind.COMPLETION)
+                    self._record(TaskRunResult(
+                        self.task,
+                        ConversationResponse(status="failed", message=message, task_name=self.task.task_name),
+                        TaskOutcome.REJECTED,
+                    ))
+                    self._notify()
+                    return
+                updated, outcome = commit_mutation(
+                    self.demo_data,
+                    proposal,
+                    generation=self.dialogue.generation,
+                    verified_account=self.task.caller.verified_account,
+                )
+                if outcome not in (MutationOutcome.APPLIED, MutationOutcome.NO_CHANGE):
+                    self.task = replace(
+                        self.task,
+                        status=TaskStatus.FAILED,
+                        pending_proposal=None,
+                        pending_mutation=None,
+                        last_active_at=None,
+                    )
+                    message = "I couldn't apply that change. No data was changed."
+                    self.status, self.status_role = message, "alert"
+                    self._publish(message, MessageKind.RECOVERY)
+                    self._record(TaskRunResult(
+                        self.task,
+                        ConversationResponse(status="failed", message=message),
+                        TaskOutcome.FAILED,
+                    ))
+                    self._notify()
+                    return
+                self.demo_data = updated
+                profile = retrieve_account(updated, self.task.caller.verified_account)
+                case_number = (
+                    f"CASE-{self.demo_data.next_case_number - 1}"
+                    if proposal.kind is MutationKind.OPEN_CASE
+                    else self.task.catalog_facts.case_number
+                )
+                facts = replace(
+                    self.task.catalog_facts,
+                    profile=profile,
+                    case_number=case_number,
+                    mutation_target=proposal.target_case_number,
+                )
+                status, message = catalog_reply(
+                    self.task.task_name,
+                    self.task.caller,
+                    facts,
+                    completed=True,
+                )
+                if status != "completed":
+                    self.task = replace(
+                        self.task,
+                        status=TaskStatus.FAILED,
+                        pending_proposal=None,
+                        pending_mutation=None,
+                        last_active_at=None,
+                    )
+                    self.status, self.status_role = SAFE_FAILURE, "alert"
+                    self._publish(SAFE_FAILURE, MessageKind.RECOVERY)
+                    self._record(TaskRunResult(
+                        self.task,
+                        ConversationResponse(status="failed", message=SAFE_FAILURE),
+                        TaskOutcome.FAILED,
+                    ))
+                    self._notify()
+                    return
+                self.task = replace(
+                    self.task,
+                    status=TaskStatus.COMPLETED,
+                    pending_proposal=None,
+                    pending_mutation=None,
+                    catalog_facts=facts,
+                    last_active_at=None,
+                )
+                self.status = "Task completed."
+                self.status_role = "status"
+                self._publish(message, MessageKind.COMPLETION)
+                self._record(TaskRunResult(
+                    self.task,
+                    ConversationResponse(status="completed", message=message, task_name=self.task.task_name),
+                    TaskOutcome.COMPLETED,
+                ))
+                self._notify()
+                return
             result = resolve_simulated_approval(self.task, approved=approved)
             if result.outcome is TaskOutcome.INVALID_TRANSITION:
                 return
@@ -139,6 +248,11 @@ class SessionCoordinator:
                 return False
             if validation is not None:
                 self.status = "Enter at least one non-whitespace character before sending." if validation.value == "blank" else "Messages must contain no more than 4,096 Unicode code points."
+                self.status_role = "alert"
+                self._publish(self.status, MessageKind.NOTICE)
+                return False
+            if self.task is not None and self.task.status is TaskStatus.WAITING_FOR_APPROVAL:
+                self.status = "Please use the approval controls to accept or reject this change."
                 self.status_role = "alert"
                 self._publish(self.status, MessageKind.NOTICE)
                 return False
@@ -367,7 +481,7 @@ class SessionCoordinator:
                 self._last_progress_text = "I'm working on that now."
                 if self.dialogue.assistant_count < 90:
                     self._publish(self._last_progress_text, MessageKind.PROGRESS)
-                self._control = ExecutionControl(self._checkpoint, revision=self._active_input.revision, generation=generation, manager_turns=cycle_turns, admitted_route=self._pinned_route, recorder=self._recorder)
+                self._control = ExecutionControl(self._checkpoint, revision=self._active_input.revision, generation=generation, manager_turns=cycle_turns, admitted_route=self._pinned_route, recorder=self._recorder, demo_data=self.demo_data)
                 self._pinned_route = None
                 self._notify()
                 from src import app
@@ -481,7 +595,8 @@ class SessionCoordinator:
             capability_call_ids=list(result.task.capability_call_ids), capability_step_ids=list(result.task.capability_step_ids),
             completed_step_ids=list(result.task.completed_step_ids), completed_step_results=list(result.task.completed_step_results),
             caller=result.task.caller, task_name=result.task.task_name, caller_input=result.task.catalog_input,
-            facts=result.task.catalog_facts, control=self._control,
+            facts=result.task.catalog_facts, control=self._control, demo_data=self.demo_data,
+            generation=self.dialogue.generation, pending_mutation=result.task.pending_mutation,
         )
         self._control.state = replace(result.task, status=TaskStatus.ACTIVE)
         recorder = self._recorder or ModelCallRecorder(result.task.task_id)
@@ -543,7 +658,13 @@ class SessionCoordinator:
             await asyncio.gather(worker, return_exceptions=True)
         async with self._lock:
             if self.task is not None and self.task.status in (TaskStatus.ACTIVE, TaskStatus.WAITING_FOR_CLARIFICATION, TaskStatus.WAITING_FOR_APPROVAL):
-                self.task = replace(self.task, status=TaskStatus.CANCELED, last_active_at=None)
+                self.task = replace(
+                    self.task,
+                    status=TaskStatus.CANCELED,
+                    pending_proposal=None,
+                    pending_mutation=None,
+                    last_active_at=None,
+                )
                 self._record(TaskRunResult(self.task, ConversationResponse(status="failed", message=""), TaskOutcome.CANCELED))
             self.status, self.status_role = "Task canceled.", "status"
             self._publish("Task canceled. No further steps were started.", MessageKind.COMPLETION)
@@ -554,6 +675,7 @@ class SessionCoordinator:
         await self.close()
         async with self._lock:
             self.dialogue = Dialogue(generation=generation)
+            self.demo_data = seed_demo_data()
             self.task = None
             self.worker = None
             self.retry_input = None
@@ -578,9 +700,16 @@ class SessionCoordinator:
             self.worker.cancel()
             await asyncio.gather(self.worker, return_exceptions=True)
         if self.task is not None and self.task.status in (TaskStatus.ACTIVE, TaskStatus.WAITING_FOR_CLARIFICATION, TaskStatus.WAITING_FOR_APPROVAL):
-            self.task = replace(self.task, status=TaskStatus.CANCELED, last_active_at=None)
+            self.task = replace(
+                self.task,
+                status=TaskStatus.CANCELED,
+                pending_proposal=None,
+                pending_mutation=None,
+                last_active_at=None,
+            )
             self._record(TaskRunResult(self.task, ConversationResponse(status="failed", message=""), TaskOutcome.CANCELED))
         self.dialogue = Dialogue(generation=self.dialogue.generation)
+        self.demo_data = DemoData(profiles=(), cases=(), next_case_number=1000)
         self.task = None
         self.retry_input = None
         self._active_input = None

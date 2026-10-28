@@ -13,6 +13,7 @@ from agents import ModelTimeoutError, RunConfig, Runner
 
 from src.accounts import CallerSession
 from src.catalog_policy import CATALOG_HELP, SAFE_FAILURE, SCOPE_REFUSAL, CatalogFacts, catalog_reply
+from src.customer_data import PendingMutation, seed_demo_data
 from src.ai_client import (
     AIServiceConfiguration,
     build_agent_model,
@@ -93,6 +94,7 @@ class TaskState:
     catalog_facts: CatalogFacts = CatalogFacts()
     catalog_input: str = ""
     input_revision: int = 0
+    pending_mutation: PendingMutation | None = None
 
 
 @dataclass(frozen=True)
@@ -349,6 +351,7 @@ def _merge_tool_ledger(state: TaskState, ledger: TaskToolLedger) -> TaskState:
         catalog_facts=ledger.facts,
         catalog_input=ledger.caller_input,
         task_name=ledger.task_name or state.task_name,
+        pending_mutation=ledger.pending_mutation,
     )
 
 
@@ -489,6 +492,8 @@ async def run_customer_task(
             else CatalogFacts()
         ),
         control=control,
+        demo_data=control.demo_data if control is not None else seed_demo_data(),
+        generation=control.generation if control is not None else 0,
     )
     if control is not None:
         control.base_seconds = turn.state.active_seconds
@@ -617,6 +622,12 @@ async def run_customer_task(
             ), tool_ledger, recorder.manager_turn_count)
         tool_ledger.task_name = admitted_name
         tool_ledger.detail_kind = route.detail_kind
+        if (
+            prior_task is not None
+            and prior_task.task_name is admitted_name
+            and prior_task.status is not TaskStatus.FAILED
+        ):
+            tool_ledger.facts = prior_task.catalog_facts
         await bounded(tool_ledger.checkpoint("admitted"), remaining_seconds)
         tool_ledger.progress.set(TaskActivity.WORKING_ON_TASK, admitted_name)
         remaining_seconds = remaining_active_seconds(accrue_active_time(turn.state, now=current_time()).state)
@@ -757,6 +768,40 @@ async def run_customer_task(
             failed.state,
             ConversationResponse(status="failed", message="I couldn't complete that task. Please try again."),
             TaskOutcome.FAILED,
+        ), tool_ledger, recorder.manager_turn_count)
+
+    if tool_ledger.pending_mutation is not None:
+        proposal_text = tool_ledger.completed_step_results[-1] if tool_ledger.completed_step_results else None
+        if (
+            tool_ledger.task_name not in (
+                TaskName.UPDATE_ACCOUNT,
+                TaskName.OPEN_SUPPORT_CASE,
+                TaskName.FOLLOW_UP_CASE,
+                TaskName.CLOSE_SUPPORT_CASE,
+            )
+            or proposal_text is None
+            or tool_ledger.policy_violated
+        ):
+            failed = fail_task(elapsed_state)
+            return finish(TaskRunResult(
+                failed.state,
+                ConversationResponse(status="failed", message=SAFE_FAILURE),
+                TaskOutcome.FAILED,
+            ), tool_ledger, recorder.manager_turn_count)
+        paused = pause_task(elapsed_state, TaskStatus.WAITING_FOR_APPROVAL, now=monotonic())
+        waiting = replace(
+            paused.state,
+            pending_proposal=proposal_text,
+            pending_mutation=tool_ledger.pending_mutation,
+        )
+        return finish(TaskRunResult(
+            waiting,
+            ConversationResponse(
+                status="approval_required",
+                message=proposal_text,
+                task_name=tool_ledger.task_name,
+            ),
+            TaskOutcome.PAUSED,
         ), tool_ledger, recorder.manager_turn_count)
 
     elapsed_state = replace(elapsed_state, task_name=tool_ledger.task_name)

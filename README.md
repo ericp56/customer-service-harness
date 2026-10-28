@@ -8,8 +8,10 @@ answers and questions arrive independently. A correction, conversational cancel,
 or catalog switch finishes the current capability and requires Yes/No confirmation
 before further work. No continues from committed facts without repeating a lookup;
 a newer correction replaces the proposal and needs fresh confirmation.
-The public application executes only the three tasks in its catalog; approval
-helpers remain internal harness examples, not public catalog work.
+The public application executes a fixed catalog of time, account verification,
+account settings, support-case, and human-support tasks. Profile and case writes
+are explicit approval workflows backed only by the conversation's synthetic
+sample data.
 
 The prototype is intentionally limited: it has no accounts, databases,
 transcripts, file uploads, or analytics. Message, task, and proposal context
@@ -19,8 +21,13 @@ current time (stated as Greenwich Mean Time), retrieving a customer account
 (demo accounts 123 and 456, verified by zip code), and transferring to customer
 support. A caller gets three account-number attempts and two zip attempts per
 account; exhausting either ends the session until a new conversation starts.
-No real customer records,
-external business APIs, or write actions are enabled. Configure
+There are no real customer records, external business APIs, payment processing,
+or durable writes. The saved-card setting is only a fixed synthetic alias; the
+chat never accepts card numbers, security codes, expiry dates, or payment
+tokens. Case descriptions, preferred names, proposals, and all sample-data
+changes remain transient and are discarded on reset or session expiry. Every
+profile or case write requires explicit approval before application code commits
+the exact validated mutation. Configure
 `OPENAI_API_KEY` and `OPENAI_MODEL` before starting; optional `OPENAI_BASE_URL`
 selects an OpenAI-compatible Responses service and `OPENAI_TIMEOUT_SECONDS`
 defaults to 10. Optional `OPENAI_REASONING` accepts `none`, `minimal`, `low`,
@@ -127,6 +134,8 @@ not a Python dependency. The original [AI integration quickstart](specs/001-ai-c
 documents the provider configuration and date/time capability baseline.
 The [catalog boundary quickstart](specs/003-caller-service-tasks/quickstart.md)
 covers fixed refusals, permitted task execution and verification continuation.
+The [customer-service expansion quickstart](specs/006-customer-service-expansion/quickstart.md)
+covers profile settings, synthetic card aliases, case ownership and approval.
 The [async conversation validation guide](specs/005-async-conversation/quickstart.md)
 records blocked-tool desktop/mobile checks, Yes/No/replacement/switch coverage,
 session cleanup, measured coordinator capacity and remaining release gates.
@@ -143,6 +152,7 @@ checks are a separate deployment validation and never require content logging.
 | `specs/001-ai-chat-integration/` | Feature specification, architecture plan, tasks, contracts, and validation guide |
 | `specs/002-agent-assisted-tasks/` | Agent-task specification, architecture, task model, UI contract, and validation guide |
 | `specs/005-async-conversation/` | Interruptible ingress, confirmation, lifecycle, compatibility and validation contracts |
+| `specs/006-customer-service-expansion/` | Transient profile settings, synthetic card alias, support cases and approval workflows |
 | `.specify/` | Spec Kit project configuration and constitution |
 
 ## Contributing with Spec Kit
