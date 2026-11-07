@@ -13,6 +13,8 @@ account settings, support-case, and human-support tasks. Profile and case writes
 are explicit approval workflows backed only by the conversation's synthetic
 sample data.
 
+## Scope and Sample Data
+
 The prototype is intentionally limited: it has no accounts, databases,
 transcripts, file uploads, or analytics. Message, task, and proposal context
 exists only in transient server-side session state. Initial capabilities are the
@@ -27,19 +29,28 @@ chat never accepts card numbers, security codes, expiry dates, or payment
 tokens. Case descriptions, preferred names, proposals, and all sample-data
 changes remain transient and are discarded on reset or session expiry. Every
 profile or case write requires explicit approval before application code commits
-the exact validated mutation. Configure
+the exact validated mutation.
+
+## Configuration
+
+Configure
 `OPENAI_API_KEY` and `OPENAI_MODEL` before starting; optional `OPENAI_BASE_URL`
 selects an OpenAI-compatible Responses service and `OPENAI_TIMEOUT_SECONDS`
 defaults to 10. Optional `OPENAI_REASONING` accepts `none`, `minimal`, `low`,
 `medium`, `high`, `xhigh`, or `max`; leave it unset or blank to use the provider
 default. Unknown values are rejected as invalid configuration. The operator is
-responsible for choosing an effort supported by the selected model. Active tasks
-are limited to 60 seconds. Fixed progress messages appear in chat initially and
+responsible for choosing an effort supported by the selected model.
+
+## Runtime and Progress
+
+Active tasks are limited to 60 seconds. Fixed progress messages appear in chat initially and
 then at five-second samples only when wording changes while work is active. Progress
 copy reflects the latest known activity, such as looking
 up information or evaluating a result, without naming capabilities. It may include
 an exact catalog task title only when validated; otherwise the existing fixed
 fallback messages are used.
+
+## Task Selection and Verification
 
 Unrelated questions (including coding, system design, websites, and this
 application's technology or database) receive a fixed polite refusal, not a
@@ -55,6 +66,9 @@ starting another catalog task requires confirming the switch. Compatible early
 details can advance without confirmation, but ZIP details cannot cross account
 identity revisions. Confirmed identity changes invalidate old verification and
 support-contact facts without refunding completed failed attempts.
+
+## Conversation Limits and Recovery
+
 Each message is limited to 4,096 Unicode code points, each conversation to 50
 accepted caller messages and 100 assistant entries, and the pending inbox to 10.
 Rejected/full input is retained. Retry references the accepted input without
@@ -66,6 +80,8 @@ invalidate late results and clear transient state. Capacity is 50 active session
 Retired synchronous app callbacks fail closed without calling a provider.
 Natural-language admission is probabilistic; the deterministic capability/output
 boundary reduces impact but does not claim complete prompt-injection immunity.
+
+## Diagnostics
 
 Operational diagnostics are emitted as privacy-safe UTC JSON Lines on stdout for an external
 collector. The application does not retain logs; records never include chat content, credentials,
